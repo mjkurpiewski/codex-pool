@@ -1386,12 +1386,7 @@ func (h *proxyHandler) handlePoolStats(w http.ResponseWriter, r *http.Request) {
 			activeCount++
 		}
 
-		accType := "codex"
-		if acc.Type == AccountTypeGemini {
-			accType = "gemini"
-		} else if acc.Type == AccountTypeClaude {
-			accType = "claude"
-		}
+		accType := string(acc.Type)
 
 		cacheHitRate := float64(0)
 		if acc.Totals.TotalInputTokens > 0 {

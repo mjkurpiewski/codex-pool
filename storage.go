@@ -44,9 +44,11 @@ type UserDailyUsage struct {
 	ReasoningTokens int64  `json:"reasoning_tokens"`
 	RequestCount    int64  `json:"request_count"`
 	// Per-provider breakdown
-	ClaudeTokens int64 `json:"claude_tokens,omitempty"`
-	CodexTokens  int64 `json:"codex_tokens,omitempty"`
-	GeminiTokens int64 `json:"gemini_tokens,omitempty"`
+	ClaudeTokens  int64 `json:"claude_tokens,omitempty"`
+	CodexTokens   int64 `json:"codex_tokens,omitempty"`
+	GeminiTokens  int64 `json:"gemini_tokens,omitempty"`
+	KimiTokens    int64 `json:"kimi_tokens,omitempty"`
+	MinimaxTokens int64 `json:"minimax_tokens,omitempty"`
 }
 
 // UserHourlyUsage tracks per-hour per-provider token usage.
@@ -230,6 +232,10 @@ func (s *usageStore) record(u RequestUsage) error {
 				daily.CodexTokens += u.BillableTokens
 			case AccountTypeGemini:
 				daily.GeminiTokens += u.BillableTokens
+			case AccountTypeKimi:
+				daily.KimiTokens += u.BillableTokens
+			case AccountTypeMinimax:
+				daily.MinimaxTokens += u.BillableTokens
 			}
 			if enc, err := json.Marshal(&daily); err == nil {
 				_ = dailyBucket.Put([]byte(dailyKey), enc)
