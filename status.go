@@ -11,15 +11,18 @@ import (
 
 // StatusData contains all the data for the status page.
 type StatusData struct {
-	GeneratedAt    time.Time
-	Uptime         time.Duration
-	TotalCount     int
-	CodexCount     int
-	GeminiCount    int
-	ClaudeCount    int
-	PoolUsers      int
-	Accounts       []AccountStatus
-	TokenAnalytics *TokenAnalytics
+	GeneratedAt     time.Time
+	Uptime          time.Duration
+	TotalCount      int
+	CodexCount      int
+	GeminiCount     int
+	ClaudeCount     int
+	KimiCount       int
+	MinimaxCount    int
+	PoolUsers       int
+	Accounts        []AccountStatus
+	TokenAnalytics  *TokenAnalytics
+	PoolUtilization []PoolUtilization `json:"pool_utilization,omitempty"`
 }
 
 // TokenAnalytics contains capacity estimation data for the status page.
@@ -91,6 +94,10 @@ func (h *proxyHandler) serveStatusPage(w http.ResponseWriter, r *http.Request) {
 			data.GeminiCount++
 		case AccountTypeClaude:
 			data.ClaudeCount++
+		case AccountTypeKimi:
+			data.KimiCount++
+		case AccountTypeMinimax:
+			data.MinimaxCount++
 		}
 
 		primaryUsed := a.Usage.PrimaryUsedPercent
@@ -161,6 +168,9 @@ func (h *proxyHandler) serveStatusPage(w http.ResponseWriter, r *http.Request) {
 	if h.store != nil {
 		data.TokenAnalytics = h.loadTokenAnalytics()
 	}
+
+	// Compute per-provider time-weighted utilization
+	data.PoolUtilization = h.pool.getPoolUtilization()
 
 	// Check Accept header for JSON
 	if r.Header.Get("Accept") == "application/json" {
@@ -399,6 +409,40 @@ const statusHTML = `<!DOCTYPE html>
         </div>
         {{end}}
     </div>
+
+    {{if .PoolUtilization}}
+    <h2 style="color: #58a6ff; margin-top: 20px; margin-bottom: 10px;">⏱ Time-Weighted Utilization</h2>
+    <p style="color: #8b949e; font-size: 12px; margin-bottom: 15px;">
+        Accounts near reset are discounted — their high usage is about to be wiped.
+        <code style="background: #21262d; padding: 2px 6px; border-radius: 3px;">effective = used% × time_to_reset / window</code>
+    </p>
+    <div class="stats" style="flex-wrap: wrap;">
+        {{range .PoolUtilization}}
+        <div class="stat" style="min-width: 200px;">
+            <div style="margin-bottom: 8px;">
+                {{if eq .Provider "codex"}}<span class="tag tag-codex">codex</span>{{end}}
+                {{if eq .Provider "claude"}}<span class="tag tag-claude">claude</span>{{end}}
+                {{if eq .Provider "gemini"}}<span class="tag tag-gemini">gemini</span>{{end}}
+            </div>
+            <div style="display: flex; gap: 20px; margin-bottom: 4px;">
+                <div>
+                    <div class="stat-value" style="font-size: 22px;">{{printf "%.0f%%" .TimeWeightedSecondaryPct}}</div>
+                    <div class="stat-label">Secondary</div>
+                </div>
+                <div>
+                    <div class="stat-value" style="font-size: 22px;">{{printf "%.0f%%" .TimeWeightedPrimaryPct}}</div>
+                    <div class="stat-label">Primary</div>
+                </div>
+            </div>
+            <div style="color: #8b949e; font-size: 12px; margin-top: 6px;">
+                {{.AvailableAccounts}}/{{.TotalAccounts}} available
+                {{if .NextSecondaryResetIn}} · next reset: {{.NextSecondaryResetIn}}{{end}}
+                {{if .ResetsIn24h}} · {{.ResetsIn24h}} reset in 24h{{end}}
+            </div>
+        </div>
+        {{end}}
+    </div>
+    {{end}}
 
     <table>
         <tr>

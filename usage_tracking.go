@@ -80,6 +80,11 @@ func (h *proxyHandler) refreshUsageIfStale() {
 			continue
 		}
 
+		// External API-key providers (Kimi, MiniMax) don't have usage endpoints
+		if accType == AccountTypeKimi || accType == AccountTypeMinimax {
+			continue
+		}
+
 		// Claude accounts have their own usage endpoint
 		if accType == AccountTypeClaude {
 			// Proactive refresh for OAuth tokens
@@ -580,35 +585,40 @@ func (h *proxyHandler) fetchDailyBreakdownData(a *Account) ([]DailyBreakdownDay,
 // This shows the client the overall pool capacity rather than a single account's usage.
 // Supports both Codex (X-Codex-*) and Claude (anthropic-ratelimit-unified-*) headers.
 func (h *proxyHandler) replaceUsageHeaders(hdr http.Header) {
-	snap := h.pool.averageUsage()
+	// Use time-weighted usage for more accurate pool utilization reporting.
+	// This discounts accounts that are about to reset (their high usage doesn't matter).
+	snap := h.pool.timeWeightedUsage()
 	if snap.RetrievedAt.IsZero() {
 		return // No usage data available
 	}
 
-	// Codex headers: Replace usage percentages with pool averages (convert back to 0-100 scale)
-	if snap.PrimaryUsedPercent > 0 {
-		hdr.Set("X-Codex-Primary-Used-Percent", fmt.Sprintf("%.1f", snap.PrimaryUsedPercent*100))
+	// Codex headers: Replace usage percentages with time-weighted pool values (0-100 scale)
+	codexSnap := h.pool.timeWeightedUsageByType(AccountTypeCodex)
+	if codexSnap.RetrievedAt.IsZero() {
+		codexSnap = snap
 	}
-	if snap.SecondaryUsedPercent > 0 {
-		hdr.Set("X-Codex-Secondary-Used-Percent", fmt.Sprintf("%.1f", snap.SecondaryUsedPercent*100))
+	if codexSnap.PrimaryUsedPercent > 0 {
+		hdr.Set("X-Codex-Primary-Used-Percent", fmt.Sprintf("%.1f", codexSnap.PrimaryUsedPercent*100))
+	}
+	if codexSnap.SecondaryUsedPercent > 0 {
+		hdr.Set("X-Codex-Secondary-Used-Percent", fmt.Sprintf("%.1f", codexSnap.SecondaryUsedPercent*100))
 	}
 
 	// Replace window minutes if we have them
-	if snap.PrimaryWindowMinutes > 0 {
-		hdr.Set("X-Codex-Primary-Window-Minutes", strconv.Itoa(snap.PrimaryWindowMinutes))
+	if codexSnap.PrimaryWindowMinutes > 0 {
+		hdr.Set("X-Codex-Primary-Window-Minutes", strconv.Itoa(codexSnap.PrimaryWindowMinutes))
 	}
-	if snap.SecondaryWindowMinutes > 0 {
-		hdr.Set("X-Codex-Secondary-Window-Minutes", strconv.Itoa(snap.SecondaryWindowMinutes))
+	if codexSnap.SecondaryWindowMinutes > 0 {
+		hdr.Set("X-Codex-Secondary-Window-Minutes", strconv.Itoa(codexSnap.SecondaryWindowMinutes))
 	}
 
-	// Claude unified rate limit headers: Replace with pool averages
+	// Claude unified rate limit headers: Replace with time-weighted pool values
 	// Only replace if the header exists (indicates this was a Claude request)
 	if hdr.Get("anthropic-ratelimit-unified-primary-utilization") != "" ||
 		hdr.Get("anthropic-ratelimit-unified-tokens-utilization") != "" {
-		// Get Claude-specific average if available
-		claudeSnap := h.pool.averageUsageByType(AccountTypeClaude)
+		claudeSnap := h.pool.timeWeightedUsageByType(AccountTypeClaude)
 		if claudeSnap.RetrievedAt.IsZero() {
-			claudeSnap = snap // Fall back to overall average
+			claudeSnap = snap // Fall back to overall time-weighted average
 		}
 
 		// Replace primary/tokens utilization (0-100 scale)
@@ -621,13 +631,12 @@ func (h *proxyHandler) replaceUsageHeaders(hdr http.Header) {
 		hdr.Set("anthropic-ratelimit-unified-secondary-utilization", secondaryUtil)
 		hdr.Set("anthropic-ratelimit-unified-requests-utilization", secondaryUtil)
 
-		// Update reset times if we have them
+		// Use earliest reset time (soonest capacity refill) instead of latest
 		now := time.Now()
 		if !claudeSnap.PrimaryResetAt.IsZero() {
 			hdr.Set("anthropic-ratelimit-unified-primary-reset", strconv.FormatInt(claudeSnap.PrimaryResetAt.Unix(), 10))
 			hdr.Set("anthropic-ratelimit-unified-tokens-reset", strconv.FormatInt(claudeSnap.PrimaryResetAt.Unix(), 10))
 		} else {
-			// Default to 5 hours from now if no reset time
 			hdr.Set("anthropic-ratelimit-unified-primary-reset", strconv.FormatInt(now.Add(5*time.Hour).Unix(), 10))
 			hdr.Set("anthropic-ratelimit-unified-tokens-reset", strconv.FormatInt(now.Add(5*time.Hour).Unix(), 10))
 		}
@@ -635,12 +644,11 @@ func (h *proxyHandler) replaceUsageHeaders(hdr http.Header) {
 			hdr.Set("anthropic-ratelimit-unified-secondary-reset", strconv.FormatInt(claudeSnap.SecondaryResetAt.Unix(), 10))
 			hdr.Set("anthropic-ratelimit-unified-requests-reset", strconv.FormatInt(claudeSnap.SecondaryResetAt.Unix(), 10))
 		} else {
-			// Default to 7 days from now if no reset time
 			hdr.Set("anthropic-ratelimit-unified-secondary-reset", strconv.FormatInt(now.Add(7*24*time.Hour).Unix(), 10))
 			hdr.Set("anthropic-ratelimit-unified-requests-reset", strconv.FormatInt(now.Add(7*24*time.Hour).Unix(), 10))
 		}
 
-		// Set status based on utilization
+		// Set status based on time-weighted utilization
 		status := "ok"
 		if claudeSnap.PrimaryUsedPercent > 0.8 || claudeSnap.SecondaryUsedPercent > 0.8 {
 			status = "warning"

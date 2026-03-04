@@ -974,7 +974,18 @@ brew install claude-code</pre>
                                 <pre id="claude-json">{"hasCompletedOnboarding": true}</pre>
                             </div>
                         </div>
-                        <div class="step-label">03 // Optional: Settings.json</div>
+                        <div class="step-label">03 // Available Models</div>
+                        <p style="color: #666; font-size: 0.8rem; margin-bottom: 10px;">These models are available through the pool proxy</p>
+                        <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px;">
+                            <span style="background: rgba(139,92,246,0.15); color: #a78bfa; padding: 4px 12px; border-radius: 12px; font-size: 0.8rem; font-family: monospace;">haiku</span>
+                            <span style="background: rgba(139,92,246,0.15); color: #a78bfa; padding: 4px 12px; border-radius: 12px; font-size: 0.8rem; font-family: monospace;">sonnet</span>
+                            <span style="background: rgba(139,92,246,0.15); color: #a78bfa; padding: 4px 12px; border-radius: 12px; font-size: 0.8rem; font-family: monospace;">opus</span>
+                            <span style="background: rgba(59,130,246,0.15); color: #60a5fa; padding: 4px 12px; border-radius: 12px; font-size: 0.8rem; font-family: monospace;">kimi-for-coding</span>
+                            <span style="background: rgba(59,130,246,0.15); color: #60a5fa; padding: 4px 12px; border-radius: 12px; font-size: 0.8rem; font-family: monospace;">kimi</span>
+                            <span style="background: rgba(16,185,129,0.15); color: #34d399; padding: 4px 12px; border-radius: 12px; font-size: 0.8rem; font-family: monospace;">minimax-m2.5</span>
+                            <span style="background: rgba(16,185,129,0.15); color: #34d399; padding: 4px 12px; border-radius: 12px; font-size: 0.8rem; font-family: monospace;">minimax</span>
+                        </div>
+                        <div class="step-label">04 // Optional: Settings.json</div>
                         <p style="color: #666; font-size: 0.8rem; margin-bottom: 10px;">Claude Code ignores auth in <code>~/.claude/settings.json</code>; this is optional for other settings</p>
                         <div class="code-wrapper">
                             <button class="copy-btn" onclick="copyToClipboard('claude-settings-json', this)">Copy</button>
@@ -1121,6 +1132,29 @@ brew install claude-code</pre>
                                 <button class="btn" onclick="cancelCodexOAuth()" style="width: 100%; margin-top: 10px; background: transparent; border: 1px solid #333; color: var(--text-muted);">Cancel</button>
                             </div>
                             <div id="codex-add-status" style="margin-top: 15px;"></div>
+                        </div>
+
+                        <!-- Add Claude Account -->
+                        <div class="step-label" style="margin-top: 30px;">Add Claude Account</div>
+                        <div id="claude-add-section" style="background: #0c0c0c; padding: 20px; border-radius: 6px; border: 1px solid #1a1a1a;">
+                            <div id="claude-add-init">
+                                <p style="color: var(--text-muted); font-size: 0.8rem; margin: 0 0 15px 0;">
+                                    Add a new Claude account via OAuth. Click the button to generate an authorization URL.
+                                </p>
+                                <button id="btn-claude-oauth" class="btn" onclick="startClaudeOAuth()" style="width: 100%;">Generate OAuth URL</button>
+                            </div>
+                            <div id="claude-add-oauth" style="display: none;">
+                                <p style="color: var(--text-muted); font-size: 0.75rem; margin: 0 0 10px 0; text-transform: uppercase;">1. Open this URL in your browser:</p>
+                                <div style="position: relative; margin-bottom: 15px;">
+                                    <pre id="claude-oauth-url" style="background: #050505; padding: 12px; overflow-x: auto; font-size: 0.7rem; color: var(--gold-bright); white-space: nowrap; margin: 0;"></pre>
+                                    <button class="copy-btn" onclick="copyToClipboard('claude-oauth-url', this)" style="position: absolute; top: 8px; right: 8px;">Copy</button>
+                                </div>
+                                <p style="color: var(--text-muted); font-size: 0.75rem; margin: 0 0 10px 0; text-transform: uppercase;">2. After logging in, get a code and paste it here:</p>
+                                <input type="text" id="claude-callback-url" placeholder="code or code#state (or full callback URL)" style="width: 100%; margin-bottom: 15px; font-size: 0.8rem; text-align: left;">
+                                <button id="btn-claude-exchange" class="btn" onclick="exchangeClaudeCode()" style="width: 100%;">Add Account</button>
+                                <button class="btn" onclick="cancelClaudeOAuth()" style="width: 100%; margin-top: 10px; background: transparent; border: 1px solid #333; color: var(--text-muted);">Cancel</button>
+                            </div>
+                            <div id="claude-add-status" style="margin-top: 15px;"></div>
                         </div>
 
                         <!-- Claude Accounts -->
@@ -1701,8 +1735,8 @@ $env:CLAUDE_CODE_OAUTH_TOKEN = "${claudeApiKey}"`;
                         <td style="text-transform: uppercase; color: #aaa;">${acc.plan_type}</td>
                         <td style="color: ${statusColor}; text-transform: uppercase; font-weight: bold; font-size: 0.7rem;">${acc.status}</td>
                         <td style="text-align: right; font-family: monospace; color: ${scoreColor}; font-weight: ${acc.is_primary ? 'bold' : 'normal'};">${scoreDisplay}</td>
-                        <td style="text-align: right; font-family: monospace; color: ${priColor};">${acc.primary_window_used_pct.toFixed(0)}% <span style="color: var(--text-muted); font-size: 0.7rem;">${pri5hrReset}</span></td>
-                        <td style="text-align: right; font-family: monospace; color: ${weekColor};">${acc.secondary_window_used_pct.toFixed(0)}% <span style="color: var(--text-muted); font-size: 0.7rem;">${weekReset}</span></td>
+                        <td style="text-align: right; font-family: monospace; color: ${priColor};">${formatPct(acc.primary_window_used_pct)} <span style="color: var(--text-muted); font-size: 0.7rem;">${pri5hrReset}</span></td>
+                        <td style="text-align: right; font-family: monospace; color: ${weekColor};">${formatPct(acc.secondary_window_used_pct)} <span style="color: var(--text-muted); font-size: 0.7rem;">${weekReset}</span></td>
                         <td style="text-align: right; font-family: monospace; color: var(--gold-dim);">${tokens}</td>
                     `;
                     tbody.appendChild(row);
@@ -1748,8 +1782,8 @@ $env:CLAUDE_CODE_OAUTH_TOKEN = "${claudeApiKey}"`;
                             <td style="text-transform: uppercase; color: #aaa;">${acc.plan_type || 'pro'}</td>
                             <td style="color: ${statusColor}; text-transform: uppercase; font-weight: bold; font-size: 0.7rem;">${acc.status}</td>
                             <td style="text-align: right; font-family: monospace; color: ${scoreColor}; font-weight: ${acc.is_primary ? 'bold' : 'normal'};">${scoreDisplay}</td>
-                            <td style="text-align: right; font-family: monospace;">${acc.primary_window_used_pct.toFixed(0)}% <span style="color: var(--text-muted); font-size: 0.7rem;">${pri5hrReset}</span></td>
-                            <td style="text-align: right; font-family: monospace;">${acc.secondary_window_used_pct.toFixed(0)}% <span style="color: var(--text-muted); font-size: 0.7rem;">${weekReset}</span></td>
+                            <td style="text-align: right; font-family: monospace;">${formatPct(acc.primary_window_used_pct)} <span style="color: var(--text-muted); font-size: 0.7rem;">${pri5hrReset}</span></td>
+                            <td style="text-align: right; font-family: monospace;">${formatPct(acc.secondary_window_used_pct)} <span style="color: var(--text-muted); font-size: 0.7rem;">${weekReset}</span></td>
                         `;
                         claudeTbody.appendChild(row);
                     }
@@ -1868,6 +1902,14 @@ $env:CLAUDE_CODE_OAUTH_TOKEN = "${claudeApiKey}"`;
             return n.toString();
         }
 
+        function formatPct(value) {
+            const pct = Number(value);
+            if (!Number.isFinite(pct)) {
+                return '0%';
+            }
+            return `${Math.max(0, Math.min(100, pct)).toFixed(0)}%`;
+        }
+
         async function loadDailyChart() {
             try {
                 const res = await poolFetch('/api/pool/daily-breakdown');
@@ -1947,8 +1989,57 @@ $env:CLAUDE_CODE_OAUTH_TOKEN = "${claudeApiKey}"`;
             }
         }
 
-        // Codex OAuth flow
+        // OAuth flow helpers
         let codexOAuthVerifier = null;
+        let claudeOAuthVerifier = null;
+
+        function parseOAuthCodeFromCallback(callbackUrl) {
+            const trimmed = (callbackUrl || '').trim();
+            if (!trimmed) {
+                return '';
+            }
+
+            // Raw callback code with optional state fragment (e.g. "code#state")
+            if (!trimmed.includes('?') && !trimmed.includes('code=')) {
+                return trimmed;
+            }
+
+            try {
+                const parsed = new URL(trimmed);
+                const queryCode = parsed.searchParams.get('code');
+                if (queryCode) {
+                    if (parsed.hash) {
+                        const hash = parsed.hash.startsWith('#') ? parsed.hash.slice(1) : parsed.hash;
+                        if (hash) {
+                            return `${queryCode}#${hash}`;
+                        }
+                    }
+                    return queryCode;
+                }
+
+                if (parsed.hash) {
+                    const hash = parsed.hash.startsWith('#') ? parsed.hash.slice(1) : parsed.hash;
+                    const hashParams = new URLSearchParams(hash);
+                    const hashCode = hashParams.get('code');
+                    if (hashCode) {
+                        return hashCode;
+                    }
+                }
+            } catch {
+                // Fall through to regex parsing.
+            }
+
+            const match = trimmed.match(/[?&#]code=([^&\s#]+)/);
+            if (!match || !match[1]) {
+                return '';
+            }
+
+            try {
+                return decodeURIComponent(match[1]);
+            } catch {
+                return match[1];
+            }
+        }
 
         async function startCodexOAuth() {
             const statusEl = document.getElementById('codex-add-status');
@@ -1990,20 +2081,13 @@ $env:CLAUDE_CODE_OAUTH_TOKEN = "${claudeApiKey}"`;
             const statusEl = document.getElementById('codex-add-status');
 
             if (!callbackUrl) {
-                statusEl.innerHTML = '<span style="color: var(--error-red);">Please paste the callback URL</span>';
+                statusEl.innerHTML = '<span style="color: var(--error-red);">Please paste the code</span>';
                 return;
             }
 
-            // Extract code from callback URL
-            let code;
-            try {
-                const url = new URL(callbackUrl);
-                code = url.searchParams.get('code');
-                if (!code) {
-                    throw new Error('No code found in URL');
-                }
-            } catch (err) {
-                statusEl.innerHTML = `<span style="color: var(--error-red);">Invalid callback URL: ${err.message}</span>`;
+            const code = parseOAuthCodeFromCallback(callbackUrl);
+            if (!code) {
+                statusEl.innerHTML = `<span style="color: var(--error-red);">No code found in URL</span>`;
                 return;
             }
 
@@ -2038,6 +2122,91 @@ $env:CLAUDE_CODE_OAUTH_TOKEN = "${claudeApiKey}"`;
                 document.getElementById('codex-add-oauth').style.display = 'none';
 
                 // Reload stats to show new account
+                setTimeout(() => loadStats(), 1000);
+            } catch (err) {
+                statusEl.innerHTML = `<span style="color: var(--error-red);">Error: ${err.message}</span>`;
+            }
+        }
+
+        async function startClaudeOAuth() {
+            const statusEl = document.getElementById('claude-add-status');
+            statusEl.innerHTML = '<span style="color: var(--text-muted);">Generating OAuth URL...</span>';
+
+            try {
+                const response = await poolFetch('/admin/claude/add', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({})
+                });
+
+                if (!response.ok) {
+                    throw new Error(await response.text());
+                }
+
+                const data = await response.json();
+                claudeOAuthVerifier = data.verifier;
+
+                document.getElementById('claude-oauth-url').textContent = data.oauth_url;
+                document.getElementById('claude-add-init').style.display = 'none';
+                document.getElementById('claude-add-oauth').style.display = 'block';
+                statusEl.innerHTML = '';
+            } catch (err) {
+                statusEl.innerHTML = `<span style="color: var(--error-red);">Error: ${err.message}</span>`;
+            }
+        }
+
+        function cancelClaudeOAuth() {
+            claudeOAuthVerifier = null;
+            document.getElementById('claude-callback-url').value = '';
+            document.getElementById('claude-add-init').style.display = 'block';
+            document.getElementById('claude-add-oauth').style.display = 'none';
+            document.getElementById('claude-add-status').innerHTML = '';
+        }
+
+        async function exchangeClaudeCode() {
+            const callbackUrl = document.getElementById('claude-callback-url').value.trim();
+            const statusEl = document.getElementById('claude-add-status');
+
+            if (!callbackUrl) {
+                statusEl.innerHTML = '<span style="color: var(--error-red);">Please paste the code</span>';
+                return;
+            }
+
+            const code = parseOAuthCodeFromCallback(callbackUrl);
+            if (!code) {
+                statusEl.innerHTML = '<span style="color: var(--error-red);">No code found in URL</span>';
+                return;
+            }
+
+            if (!claudeOAuthVerifier) {
+                statusEl.innerHTML = '<span style="color: var(--error-red);">Session expired, please start over</span>';
+                return;
+            }
+
+            statusEl.innerHTML = '<span style="color: var(--text-muted);">Exchanging code for tokens...</span>';
+
+            try {
+                const response = await poolFetch('/admin/claude/exchange', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        code: code,
+                        verifier: claudeOAuthVerifier
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(await response.text());
+                }
+
+                const data = await response.json();
+                statusEl.innerHTML = `<span style="color: var(--success-green);">Account added: ${data.account_id}</span>`;
+
+                claudeOAuthVerifier = null;
+                document.getElementById('claude-callback-url').value = '';
+                document.getElementById('claude-add-init').style.display = 'block';
+                document.getElementById('claude-add-oauth').style.display = 'none';
+
                 setTimeout(() => loadStats(), 1000);
             } catch (err) {
                 statusEl.innerHTML = `<span style="color: var(--error-red);">Error: ${err.message}</span>`;

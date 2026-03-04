@@ -165,6 +165,26 @@ func (h *proxyHandler) clearAllRateLimits(w http.ResponseWriter) {
 	respondJSON(w, map[string]any{"status": "ok", "cleared": cleared})
 }
 
+// purgeAnonymousUsers removes all usage data for users that are not registered pool users.
+func (h *proxyHandler) purgeAnonymousUsers(w http.ResponseWriter) {
+	allowed := make(map[string]bool)
+	if h.poolUsers != nil {
+		for _, u := range h.poolUsers.List() {
+			allowed[u.ID] = true
+		}
+	}
+
+	deleted, err := h.store.purgeNonPoolUsers(allowed)
+	if err != nil {
+		log.Printf("purge anonymous users failed: %v", err)
+		http.Error(w, "purge failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("purged %d anonymous usage entries (kept %d pool users)", deleted, len(allowed))
+	respondJSON(w, map[string]any{"status": "ok", "deleted": deleted, "kept_users": len(allowed)})
+}
+
 // forceRefreshAccount forces a token refresh for a specific account, bypassing rate limits.
 func (h *proxyHandler) forceRefreshAccount(w http.ResponseWriter, accountID string) {
 	h.pool.mu.RLock()
@@ -415,8 +435,8 @@ func (h *proxyHandler) handleClaudeProfile(w http.ResponseWriter, r *http.Reques
 func (h *proxyHandler) handleClaudeUsage(w http.ResponseWriter, r *http.Request) {
 	h.refreshUsageIfStale()
 
-	// Get average usage across all Claude accounts
-	snap := h.pool.averageUsageByType(AccountTypeClaude)
+	// Use time-weighted usage for accurate pool utilization
+	snap := h.pool.timeWeightedUsageByType(AccountTypeClaude)
 	stats := h.pool.getPoolStats()
 
 	// Format response like Claude's /api/oauth/usage endpoint
@@ -424,6 +444,7 @@ func (h *proxyHandler) handleClaudeUsage(w http.ResponseWriter, r *http.Request)
 	fiveHourReset := now.Add(5 * time.Hour)
 	sevenDayReset := now.Add(7 * 24 * time.Hour)
 
+	// Use earliest reset (soonest capacity refill)
 	if !snap.PrimaryResetAt.IsZero() {
 		fiveHourReset = snap.PrimaryResetAt
 	}
@@ -457,7 +478,7 @@ func (h *proxyHandler) handleClaudeUsage(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *proxyHandler) handleAggregatedUsage(w http.ResponseWriter, reqID string) {
-	snap := h.pool.averageUsage()
+	snap := h.pool.timeWeightedUsage()
 	poolStats := h.pool.getPoolStats()
 
 	resp := map[string]any{

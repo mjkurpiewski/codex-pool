@@ -53,9 +53,11 @@ type ProviderRegistry struct {
 // NewProviderRegistry creates a registry with all configured providers.
 // Order matters for path matching: more specific patterns must come first.
 // Claude (/v1/messages) must be checked before Codex (/v1/) to avoid false matches.
-func NewProviderRegistry(codex *CodexProvider, claude *ClaudeProvider, gemini *GeminiProvider) *ProviderRegistry {
+// Extra providers (e.g., Kimi, MiniMax) are model-routed and never win path matching.
+func NewProviderRegistry(codex *CodexProvider, claude *ClaudeProvider, gemini *GeminiProvider, extra ...Provider) *ProviderRegistry {
 	// Order: Gemini (unique paths), Claude (specific /v1/messages), Codex (broad /v1/)
 	providers := []Provider{gemini, claude, codex}
+	providers = append(providers, extra...)
 	byType := make(map[AccountType]Provider)
 	for _, p := range providers {
 		byType[p.Type()] = p

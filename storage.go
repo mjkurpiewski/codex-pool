@@ -663,6 +663,63 @@ func (s *usageStore) getAllUserUsage() ([]UserUsage, error) {
 	return users, nil
 }
 
+// purgeNonPoolUsers deletes all usage data for users not in the allowed set.
+// Returns the number of entries deleted.
+func (s *usageStore) purgeNonPoolUsers(allowedUserIDs map[string]bool) (int, error) {
+	if s == nil || s.db == nil {
+		return 0, nil
+	}
+	deleted := 0
+	err := s.db.Update(func(tx *bbolt.Tx) error {
+		// Purge from user_usage bucket (key = userID)
+		b := tx.Bucket([]byte(bucketUserUsage))
+		var toDelete [][]byte
+		_ = b.ForEach(func(k, v []byte) error {
+			if !allowedUserIDs[string(k)] {
+				toDelete = append(toDelete, append([]byte{}, k...))
+			}
+			return nil
+		})
+		for _, k := range toDelete {
+			_ = b.Delete(k)
+			deleted++
+		}
+
+		// Purge from user_daily_usage bucket (key = userID|date)
+		daily := tx.Bucket([]byte(bucketUserDailyUsage))
+		toDelete = toDelete[:0]
+		_ = daily.ForEach(func(k, v []byte) error {
+			parts := strings.SplitN(string(k), "|", 2)
+			if len(parts) >= 1 && !allowedUserIDs[parts[0]] {
+				toDelete = append(toDelete, append([]byte{}, k...))
+			}
+			return nil
+		})
+		for _, k := range toDelete {
+			_ = daily.Delete(k)
+			deleted++
+		}
+
+		// Purge from user_hourly_usage bucket (key = userID|hour|type)
+		hourly := tx.Bucket([]byte(bucketUserHourlyUsage))
+		toDelete = toDelete[:0]
+		_ = hourly.ForEach(func(k, v []byte) error {
+			parts := strings.SplitN(string(k), "|", 2)
+			if len(parts) >= 1 && !allowedUserIDs[parts[0]] {
+				toDelete = append(toDelete, append([]byte{}, k...))
+			}
+			return nil
+		})
+		for _, k := range toDelete {
+			_ = hourly.Delete(k)
+			deleted++
+		}
+
+		return nil
+	})
+	return deleted, err
+}
+
 // getUserDailyUsage returns daily usage for a user over the last N days.
 func (s *usageStore) getUserDailyUsage(userID string, days int) ([]UserDailyUsage, error) {
 	var daily []UserDailyUsage

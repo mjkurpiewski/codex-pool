@@ -166,6 +166,16 @@ func (h *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		h.clearAllRateLimits(w)
 		return
+	case "/admin/purge-anonymous":
+		if !h.checkAdminAuth(w, r) {
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		h.purgeAnonymousUsers(w)
+		return
 	}
 
 	// Account resurrect: /admin/accounts/:id/resurrect
@@ -240,11 +250,11 @@ func (h *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Claude account admin routes
+	// Claude account admin routes (friend auth - accessible from friend landing page)
 	// Note: /admin/claude/callback skips auth (OAuth redirect from Anthropic)
 	if strings.HasPrefix(r.URL.Path, "/admin/claude") {
 		if r.URL.Path != "/admin/claude/callback" {
-			if !h.checkAdminAuth(w, r) {
+			if !h.checkAdminOrFriendAuth(w, r) {
 				return
 			}
 		}

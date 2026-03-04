@@ -33,6 +33,8 @@ type config struct {
 	geminiBase    *url.URL // Gemini CloudCode endpoint (for OAuth/Code Assist mode)
 	geminiAPIBase *url.URL // Gemini API endpoint (for API key mode)
 	claudeBase    *url.URL // Claude API endpoint
+	kimiBase      *url.URL // Kimi API endpoint
+	minimaxBase   *url.URL // MiniMax API endpoint
 	poolDir       string
 
 	disableRefresh  bool
@@ -100,6 +102,8 @@ func buildConfig() config {
 	cfg.geminiBase = mustParse(getenv("UPSTREAM_GEMINI_BASE", "https://cloudcode-pa.googleapis.com"))
 	cfg.geminiAPIBase = mustParse(getenv("UPSTREAM_GEMINI_API_BASE", "https://generativelanguage.googleapis.com"))
 	cfg.claudeBase = mustParse(getenv("UPSTREAM_CLAUDE_BASE", "https://api.anthropic.com"))
+	cfg.kimiBase = mustParse(getenv("UPSTREAM_KIMI_BASE", "https://api.kimi.com/coding"))
+	cfg.minimaxBase = mustParse(getenv("UPSTREAM_MINIMAX_BASE", "https://api.minimax.io/anthropic"))
 	cfg.poolDir = getConfigString("POOL_DIR", fileCfg.PoolDir, "pool")
 
 	// Refresh often fails for some auth.json fixtures; allow opting out.
@@ -179,7 +183,9 @@ func main() {
 	codexProvider := NewCodexProvider(cfg.responsesBase, cfg.whamBase, cfg.refreshBase)
 	claudeProvider := NewClaudeProvider(cfg.claudeBase)
 	geminiProvider := NewGeminiProvider(cfg.geminiBase, cfg.geminiAPIBase)
-	registry := NewProviderRegistry(codexProvider, claudeProvider, geminiProvider)
+	kimiProvider := NewKimiProvider(cfg.kimiBase)
+	minimaxProvider := NewMinimaxProvider(cfg.minimaxBase)
+	registry := NewProviderRegistry(codexProvider, claudeProvider, geminiProvider, kimiProvider, minimaxProvider)
 
 	log.Printf("loading pool from %s", cfg.poolDir)
 	accounts, err := loadPool(cfg.poolDir, registry)
@@ -191,6 +197,8 @@ func main() {
 	codexCount := pool.countByType(AccountTypeCodex)
 	claudeCount := pool.countByType(AccountTypeClaude)
 	geminiCount := pool.countByType(AccountTypeGemini)
+	kimiCount := pool.countByType(AccountTypeKimi)
+	minimaxCount := pool.countByType(AccountTypeMinimax)
 	if pool.count() == 0 {
 		log.Printf("warning: loaded 0 accounts from %s", cfg.poolDir)
 	}
@@ -308,8 +316,13 @@ func main() {
 		log.Printf("warning: failed to configure HTTP/2 server: %v", err)
 	}
 
-	log.Printf("codex-pool proxy listening on %s (codex=%d, claude=%d, gemini=%d, request_timeout=%v, stream_timeout=%v, stream_idle_timeout=%v)",
-		cfg.listenAddr, codexCount, claudeCount, geminiCount, cfg.requestTimeout, cfg.streamTimeout, cfg.streamIdleTimeout)
+	if cfg.adminToken != "" {
+		log.Printf("admin token configured (len=%d)", len(cfg.adminToken))
+	} else {
+		log.Printf("WARNING: no admin token configured")
+	}
+	log.Printf("codex-pool proxy listening on %s (codex=%d, claude=%d, gemini=%d, kimi=%d, minimax=%d, request_timeout=%v, stream_timeout=%v, stream_idle_timeout=%v)",
+		cfg.listenAddr, codexCount, claudeCount, geminiCount, kimiCount, minimaxCount, cfg.requestTimeout, cfg.streamTimeout, cfg.streamIdleTimeout)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("server error: %v", err)
 	}
@@ -484,6 +497,50 @@ func modelRequiresCodexPro(model string) bool {
 	return strings.EqualFold(strings.TrimSpace(model), "gpt-5.3-codex-spark")
 }
 
+// modelRouteOverride checks if the requested model should be routed to an external
+// provider (Kimi, MiniMax, etc.) instead of the path-detected provider.
+// Returns (provider, baseURL, rewrittenBody) or (nil, nil, nil) if no override.
+func (h *proxyHandler) modelRouteOverride(model string, body []byte) (Provider, *url.URL, []byte) {
+	if isKimiModel(model) {
+		p := h.registry.ForType(AccountTypeKimi)
+		if p == nil {
+			return nil, nil, nil
+		}
+		return p, p.UpstreamURL(""), nil
+	}
+	if isMinimaxModel(model) {
+		p := h.registry.ForType(AccountTypeMinimax)
+		if p == nil {
+			return nil, nil, nil
+		}
+		// Rewrite the model name to the canonical upstream name
+		canonical := minimaxCanonicalModel(model)
+		rewritten := rewriteModelInBody(body, canonical)
+		return p, p.UpstreamURL(""), rewritten
+	}
+	return nil, nil, nil
+}
+
+// rewriteModelInBody replaces the "model" field in a JSON request body.
+func rewriteModelInBody(body []byte, newModel string) []byte {
+	if len(body) == 0 {
+		return nil
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return nil
+	}
+	if _, ok := obj["model"]; !ok {
+		return nil
+	}
+	obj["model"] = newModel
+	rewritten, err := json.Marshal(obj)
+	if err != nil {
+		return nil
+	}
+	return rewritten
+}
+
 func extractConversationIDFromSSE(sample []byte) string {
 	// Best-effort: scan lines for JSON fragments and grab conversation_id/conversation.
 	for _, line := range bytes.Split(sample, []byte("\n")) {
@@ -534,7 +591,7 @@ func (h *proxyHandler) proxyRequest(w http.ResponseWriter, r *http.Request, reqI
 
 	// Determine user ID - either from pool JWT, Claude pool token, or hashed IP
 	var userID string
-	var userType string // "pool_user", "passthrough", or "anonymous"
+	var userType string // "pool_user" or "passthrough"
 	secret := getPoolJWTSecret()
 
 	// Check for Claude pool tokens first (sk-ant-oat01-pool-* or legacy sk-ant-api-pool-*)
@@ -630,17 +687,11 @@ func (h *proxyHandler) proxyRequest(w http.ResponseWriter, r *http.Request, reqI
 		}
 	}
 
-	// If not a pool user, hash their IP for anonymous tracking
+	// Reject unauthenticated requests - require a valid pool token
 	if userID == "" {
-		ip := getClientIP(r)
-		salt := h.cfg.friendCode
-		if salt == "" {
-			salt = "codex-pool"
-		}
-		userID = hashUserIP(ip, salt)
-		userType = "anonymous"
+		http.Error(w, "unauthorized: valid pool token required", http.StatusUnauthorized)
+		return
 	}
-	// Store userType in request context for whoami endpoint
 	_ = userType
 
 	provider, targetBase := h.pickUpstream(r.URL.Path, r.Header)
@@ -679,6 +730,19 @@ func (h *proxyHandler) proxyRequest(w http.ResponseWriter, r *http.Request, reqI
 	inspect = bodyForInspection(r, inspect)
 	conversationID := extractConversationIDFromJSON(inspect)
 	requestedModel := extractRequestedModelFromJSON(inspect)
+
+	// Model-based provider override: route to external providers by model name.
+	if requestedModel != "" {
+		if overrideProvider, overrideBase, rewrittenBody := h.modelRouteOverride(requestedModel, bodyBytes); overrideProvider != nil {
+			provider = overrideProvider
+			targetBase = overrideBase
+			accountType = overrideProvider.Type()
+			if rewrittenBody != nil {
+				bodyBytes = rewrittenBody
+			}
+		}
+	}
+
 	if h.cfg.debug && conversationID == "" && len(inspect) > 0 {
 		// Help debug why conversation id isn't being extracted without dumping the full body.
 		var obj map[string]any

@@ -17,9 +17,11 @@ import (
 type AccountType string
 
 const (
-	AccountTypeCodex  AccountType = "codex"
-	AccountTypeGemini AccountType = "gemini"
-	AccountTypeClaude AccountType = "claude"
+	AccountTypeCodex   AccountType = "codex"
+	AccountTypeGemini  AccountType = "gemini"
+	AccountTypeClaude  AccountType = "claude"
+	AccountTypeKimi    AccountType = "kimi"
+	AccountTypeMinimax AccountType = "minimax"
 )
 
 type Account struct {
@@ -290,9 +292,11 @@ func loadPool(dir string, registry *ProviderRegistry) ([]*Account, error) {
 
 	// Load accounts from provider subdirectories: pool/codex/, pool/claude/, pool/gemini/
 	providerDirs := map[string]AccountType{
-		"codex":  AccountTypeCodex,
-		"claude": AccountTypeClaude,
-		"gemini": AccountTypeGemini,
+		"codex":   AccountTypeCodex,
+		"claude":  AccountTypeClaude,
+		"gemini":  AccountTypeGemini,
+		"kimi":    AccountTypeKimi,
+		"minimax": AccountTypeMinimax,
 	}
 
 	for subdir, accountType := range providerDirs {
@@ -1051,6 +1055,240 @@ func (p *poolState) averageUsageByType(accountType AccountType) UsageSnapshot {
 
 func max(a, b float64) float64 {
 	if a > b {
+		return a
+	}
+	return b
+}
+
+// PoolUtilization contains time-weighted utilization metrics for a provider or the whole pool.
+type PoolUtilization struct {
+	Provider                 string  `json:"provider"`
+	TimeWeightedPrimaryPct   float64 `json:"time_weighted_primary_pct"`
+	TimeWeightedSecondaryPct float64 `json:"time_weighted_secondary_pct"`
+	AvailableAccounts        int     `json:"available_accounts"`
+	TotalAccounts            int     `json:"total_accounts"`
+	NextSecondaryResetIn     string  `json:"next_secondary_reset_in,omitempty"`
+	ResetsIn24h              int     `json:"resets_in_24h"`
+}
+
+const (
+	primaryWindowDuration   = 5 * time.Hour
+	secondaryWindowDuration = 7 * 24 * time.Hour
+)
+
+// timeWeightedUsage produces a time-weighted usage snapshot across all alive accounts.
+func (p *poolState) timeWeightedUsage() UsageSnapshot {
+	return p.timeWeightedUsageByType("")
+}
+
+// timeWeightedUsageByType produces a time-weighted usage snapshot for accounts of a specific type.
+// Instead of simple averaging, it weights each account's utilization by how much time remains
+// until its window resets. An account at 80% that resets in 2 hours contributes almost nothing,
+// while one at 80% that resets in 6 days contributes heavily.
+//
+// Formula: effective_util = used_pct × min(time_to_reset, window_length) / window_length
+func (p *poolState) timeWeightedUsageByType(accountType AccountType) UsageSnapshot {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	now := time.Now()
+	var totalEffP, totalEffS float64
+	var totalPW, totalSW float64
+	var nP, nS float64
+	var n float64
+	var earliestPrimaryReset, earliestSecondaryReset time.Time
+
+	for _, a := range p.accounts {
+		if a.Dead {
+			continue
+		}
+		if accountType != "" && a.Type != accountType {
+			continue
+		}
+
+		usedP := a.Usage.PrimaryUsedPercent
+		if usedP == 0 {
+			usedP = a.Usage.PrimaryUsed
+		}
+		usedS := a.Usage.SecondaryUsedPercent
+		if usedS == 0 {
+			usedS = a.Usage.SecondaryUsed
+		}
+
+		// Compute time weight for primary window
+		primaryWeight := 1.0 // default: no reset info, use full weight (conservative)
+		if !a.Usage.PrimaryResetAt.IsZero() && a.Usage.PrimaryResetAt.After(now) {
+			timeToReset := a.Usage.PrimaryResetAt.Sub(now)
+			if timeToReset > primaryWindowDuration {
+				timeToReset = primaryWindowDuration
+			}
+			primaryWeight = float64(timeToReset) / float64(primaryWindowDuration)
+		}
+
+		// Compute time weight for secondary window
+		secondaryWeight := 1.0 // default: no reset info, use full weight (conservative)
+		if !a.Usage.SecondaryResetAt.IsZero() && a.Usage.SecondaryResetAt.After(now) {
+			timeToReset := a.Usage.SecondaryResetAt.Sub(now)
+			if timeToReset > secondaryWindowDuration {
+				timeToReset = secondaryWindowDuration
+			}
+			secondaryWeight = float64(timeToReset) / float64(secondaryWindowDuration)
+		}
+
+		totalEffP += usedP * primaryWeight
+		totalEffS += usedS * secondaryWeight
+		n += 1
+
+		if a.Usage.PrimaryWindowMinutes > 0 {
+			totalPW += float64(a.Usage.PrimaryWindowMinutes)
+			nP += 1
+		}
+		if a.Usage.SecondaryWindowMinutes > 0 {
+			totalSW += float64(a.Usage.SecondaryWindowMinutes)
+			nS += 1
+		}
+
+		// Track earliest reset times (soonest capacity refill)
+		if !a.Usage.PrimaryResetAt.IsZero() && a.Usage.PrimaryResetAt.After(now) {
+			if earliestPrimaryReset.IsZero() || a.Usage.PrimaryResetAt.Before(earliestPrimaryReset) {
+				earliestPrimaryReset = a.Usage.PrimaryResetAt
+			}
+		}
+		if !a.Usage.SecondaryResetAt.IsZero() && a.Usage.SecondaryResetAt.After(now) {
+			if earliestSecondaryReset.IsZero() || a.Usage.SecondaryResetAt.Before(earliestSecondaryReset) {
+				earliestSecondaryReset = a.Usage.SecondaryResetAt
+			}
+		}
+	}
+
+	if n == 0 {
+		return UsageSnapshot{}
+	}
+	return UsageSnapshot{
+		PrimaryUsed:            totalEffP / n,
+		SecondaryUsed:          totalEffS / n,
+		PrimaryUsedPercent:     totalEffP / n,
+		SecondaryUsedPercent:   totalEffS / n,
+		PrimaryWindowMinutes:   int(totalPW / max(1, nP)),
+		SecondaryWindowMinutes: int(totalSW / max(1, nS)),
+		PrimaryResetAt:         earliestPrimaryReset,
+		SecondaryResetAt:       earliestSecondaryReset,
+		RetrievedAt:            now,
+	}
+}
+
+// getPoolUtilization computes per-provider time-weighted utilization stats.
+func (p *poolState) getPoolUtilization() []PoolUtilization {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	now := time.Now()
+	in24h := now.Add(24 * time.Hour)
+
+	type provAccum struct {
+		totalEffP, totalEffS     float64
+		n                        float64
+		available, total         int
+		earliestSecondaryReset   time.Time
+		resetsIn24h              int
+	}
+
+	accums := map[AccountType]*provAccum{
+		AccountTypeCodex:  {},
+		AccountTypeClaude: {},
+		AccountTypeGemini: {},
+	}
+
+	for _, a := range p.accounts {
+		if a.Dead || a.Disabled {
+			continue
+		}
+
+		pa := accums[a.Type]
+		if pa == nil {
+			continue
+		}
+		pa.total++
+
+		usedP := a.Usage.PrimaryUsedPercent
+		if usedP == 0 {
+			usedP = a.Usage.PrimaryUsed
+		}
+		usedS := a.Usage.SecondaryUsedPercent
+		if usedS == 0 {
+			usedS = a.Usage.SecondaryUsed
+		}
+
+		if usedS < 0.95 {
+			pa.available++
+		}
+
+		// Primary time weight
+		primaryWeight := 1.0
+		if !a.Usage.PrimaryResetAt.IsZero() && a.Usage.PrimaryResetAt.After(now) {
+			ttr := a.Usage.PrimaryResetAt.Sub(now)
+			if ttr > primaryWindowDuration {
+				ttr = primaryWindowDuration
+			}
+			primaryWeight = float64(ttr) / float64(primaryWindowDuration)
+		}
+
+		// Secondary time weight
+		secondaryWeight := 1.0
+		if !a.Usage.SecondaryResetAt.IsZero() && a.Usage.SecondaryResetAt.After(now) {
+			ttr := a.Usage.SecondaryResetAt.Sub(now)
+			if ttr > secondaryWindowDuration {
+				ttr = secondaryWindowDuration
+			}
+			secondaryWeight = float64(ttr) / float64(secondaryWindowDuration)
+
+			if pa.earliestSecondaryReset.IsZero() || a.Usage.SecondaryResetAt.Before(pa.earliestSecondaryReset) {
+				pa.earliestSecondaryReset = a.Usage.SecondaryResetAt
+			}
+			if a.Usage.SecondaryResetAt.Before(in24h) {
+				pa.resetsIn24h++
+			}
+		}
+
+		pa.totalEffP += usedP * primaryWeight
+		pa.totalEffS += usedS * secondaryWeight
+		pa.n++
+	}
+
+	var results []PoolUtilization
+	for _, accType := range []AccountType{AccountTypeCodex, AccountTypeClaude, AccountTypeGemini} {
+		pa := accums[accType]
+		if pa.total == 0 {
+			continue
+		}
+
+		pu := PoolUtilization{
+			Provider:          string(accType),
+			AvailableAccounts: pa.available,
+			TotalAccounts:     pa.total,
+			ResetsIn24h:       pa.resetsIn24h,
+		}
+		if pa.n > 0 {
+			pu.TimeWeightedPrimaryPct = (pa.totalEffP / pa.n) * 100
+			pu.TimeWeightedSecondaryPct = (pa.totalEffS / pa.n) * 100
+		}
+		if !pa.earliestSecondaryReset.IsZero() && pa.earliestSecondaryReset.After(now) {
+			pu.NextSecondaryResetIn = formatDuration(pa.earliestSecondaryReset.Sub(now))
+		}
+
+		results = append(results, pu)
+	}
+	return results
+}
+
+func earliestReset(a, b time.Time) time.Time {
+	if a.IsZero() {
+		return b
+	}
+	if b.IsZero() {
+		return a
+	}
+	if a.Before(b) {
 		return a
 	}
 	return b
