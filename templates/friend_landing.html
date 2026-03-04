@@ -975,15 +975,15 @@ brew install claude-code</pre>
                             </div>
                         </div>
                         <div class="step-label">03 // Available Models</div>
-                        <p style="color: #666; font-size: 0.8rem; margin-bottom: 10px;">These models are available through the pool proxy</p>
-                        <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 20px;">
-                            <span style="background: rgba(139,92,246,0.15); color: #a78bfa; padding: 4px 12px; border-radius: 12px; font-size: 0.8rem; font-family: monospace;">haiku</span>
-                            <span style="background: rgba(139,92,246,0.15); color: #a78bfa; padding: 4px 12px; border-radius: 12px; font-size: 0.8rem; font-family: monospace;">sonnet</span>
-                            <span style="background: rgba(139,92,246,0.15); color: #a78bfa; padding: 4px 12px; border-radius: 12px; font-size: 0.8rem; font-family: monospace;">opus</span>
-                            <span style="background: rgba(59,130,246,0.15); color: #60a5fa; padding: 4px 12px; border-radius: 12px; font-size: 0.8rem; font-family: monospace;">kimi-for-coding</span>
-                            <span style="background: rgba(59,130,246,0.15); color: #60a5fa; padding: 4px 12px; border-radius: 12px; font-size: 0.8rem; font-family: monospace;">kimi</span>
-                            <span style="background: rgba(16,185,129,0.15); color: #34d399; padding: 4px 12px; border-radius: 12px; font-size: 0.8rem; font-family: monospace;">minimax-m2.5</span>
-                            <span style="background: rgba(16,185,129,0.15); color: #34d399; padding: 4px 12px; border-radius: 12px; font-size: 0.8rem; font-family: monospace;">minimax</span>
+                        <p style="color: #666; font-size: 0.8rem; margin-bottom: 10px;">Use these model names in Claude Code (routed through the pool)</p>
+                        <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 20px;">
+                            <span style="background: rgba(139,92,246,0.1); color: #a78bfa; padding: 3px 10px; border-radius: 10px; font-size: 0.75rem; font-family: monospace;">haiku</span>
+                            <span style="background: rgba(139,92,246,0.1); color: #a78bfa; padding: 3px 10px; border-radius: 10px; font-size: 0.75rem; font-family: monospace;">sonnet</span>
+                            <span style="background: rgba(139,92,246,0.1); color: #a78bfa; padding: 3px 10px; border-radius: 10px; font-size: 0.75rem; font-family: monospace;">opus</span>
+                            <span style="background: rgba(59,130,246,0.1); color: #60a5fa; padding: 3px 10px; border-radius: 10px; font-size: 0.75rem; font-family: monospace;">kimi</span>
+                            <span style="background: rgba(59,130,246,0.1); color: #60a5fa; padding: 3px 10px; border-radius: 10px; font-size: 0.75rem; font-family: monospace;">kimi-for-coding</span>
+                            <span style="background: rgba(245,158,11,0.1); color: #fbbf24; padding: 3px 10px; border-radius: 10px; font-size: 0.75rem; font-family: monospace;">minimax</span>
+                            <span style="background: rgba(245,158,11,0.1); color: #fbbf24; padding: 3px 10px; border-radius: 10px; font-size: 0.75rem; font-family: monospace;">minimax-m2.5</span>
                         </div>
                         <div class="step-label">04 // Optional: Settings.json</div>
                         <p style="color: #666; font-size: 0.8rem; margin-bottom: 10px;">Claude Code ignores auth in <code>~/.claude/settings.json</code>; this is optional for other settings</p>
@@ -1007,10 +1007,10 @@ brew install claude-code</pre>
                     </div>
                     <div id="stats-content" style="display: none;">
                         <!-- Aggregate Summary -->
-                        <div class="stats-summary" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-bottom: 30px;">
+                        <div class="stats-summary" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; margin-bottom: 15px;">
                             <div class="stat-card">
                                 <div class="stat-value" id="stat-total-accounts">-</div>
-                                <div class="stat-label">Codex Accounts</div>
+                                <div class="stat-label">Total Accounts</div>
                             </div>
                             <div class="stat-card">
                                 <div class="stat-value" style="color: var(--success-green);" id="stat-active-accounts">-</div>
@@ -1021,6 +1021,8 @@ brew install claude-code</pre>
                                 <div class="stat-label">Pool Users</div>
                             </div>
                         </div>
+                        <!-- Provider breakdown badges -->
+                        <div id="provider-breakdown" style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 30px; justify-content: center;"></div>
 
                         <!-- Token Usage Summary -->
                         <div class="step-label">Token Usage</div>
@@ -1043,20 +1045,8 @@ brew install claude-code</pre>
                             </div>
                         </div>
 
-                        <!-- Capacity Analysis -->
-                        <div id="capacity-section" style="display: none;">
-                            <div class="step-label">Capacity Analysis</div>
-                            <div style="margin-bottom: 20px; background: #0c0c0c; padding: 15px; border-radius: 6px; border: 1px solid #1a1a1a;">
-                                <p style="color: var(--text-muted); font-size: 0.75rem; margin: 0 0 10px 0;">
-                                    <span id="capacity-samples">0</span> samples collected.
-                                    Formula: <code style="background: #151515; padding: 2px 6px; border-radius: 3px; color: var(--gold-dim);" id="capacity-formula"></code>
-                                </p>
-                                <div id="capacity-plans"></div>
-                            </div>
-                        </div>
-
-                        <!-- Usage Bars -->
-                        <div class="step-label">Rate Limit Windows</div>
+                        <!-- Codex Rate Limits -->
+                        <div class="step-label">Codex Rate Limits</div>
                         <div style="margin-bottom: 30px; background: #0c0c0c; padding: 20px; border-radius: 6px; border: 1px solid #1a1a1a;">
                             <div style="display: flex; align-items: center; margin-bottom: 15px;">
                                 <span style="width: 90px; color: var(--text-muted); font-size: 0.7rem; text-transform: uppercase;">5hr Window</span>
@@ -1065,19 +1055,12 @@ brew install claude-code</pre>
                                 </div>
                                 <span id="pct-primary" style="width: 50px; text-align: right; color: var(--text-main); font-size: 0.8rem; font-family: monospace;">0%</span>
                             </div>
-                            <div style="display: flex; align-items: center; margin-bottom: 15px;">
+                            <div style="display: flex; align-items: center;">
                                 <span style="width: 90px; color: var(--text-muted); font-size: 0.7rem; text-transform: uppercase;">Weekly</span>
                                 <div class="progress-track">
                                     <div id="bar-secondary" class="progress-bar" style="background: linear-gradient(90deg, #3498db, #9b59b6);"></div>
                                 </div>
                                 <span id="pct-secondary" style="width: 50px; text-align: right; color: var(--text-main); font-size: 0.8rem; font-family: monospace;">0%</span>
-                            </div>
-                            <div style="display: flex; align-items: center;">
-                                <span style="width: 90px; color: var(--text-muted); font-size: 0.7rem; text-transform: uppercase;">Week Cycle</span>
-                                <div class="progress-track">
-                                    <div id="bar-week-elapsed" class="progress-bar" style="background: linear-gradient(90deg, #2c3e50, #444);"></div>
-                                </div>
-                                <span id="pct-week-elapsed" style="width: 50px; text-align: right; color: var(--text-muted); font-size: 0.8rem; font-family: monospace;">0%</span>
                             </div>
                         </div>
 
@@ -1090,8 +1073,15 @@ brew install claude-code</pre>
                             <div id="chart-legend" style="display: flex; gap: 15px; margin-top: 10px; flex-wrap: wrap; font-size: 0.7rem;"></div>
                         </div>
 
-                        <!-- Account Table -->
+                        <!-- Codex Accounts -->
                         <div class="step-label">Codex Accounts</div>
+                        <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px;">
+                            <span style="background: rgba(212,175,55,0.1); color: var(--gold-dim); padding: 3px 10px; border-radius: 10px; font-size: 0.7rem; font-family: monospace;">o3</span>
+                            <span style="background: rgba(212,175,55,0.1); color: var(--gold-dim); padding: 3px 10px; border-radius: 10px; font-size: 0.7rem; font-family: monospace;">o4-mini</span>
+                            <span style="background: rgba(212,175,55,0.1); color: var(--gold-dim); padding: 3px 10px; border-radius: 10px; font-size: 0.7rem; font-family: monospace;">gpt-4.1</span>
+                            <span style="background: rgba(212,175,55,0.1); color: var(--gold-dim); padding: 3px 10px; border-radius: 10px; font-size: 0.7rem; font-family: monospace;">codex-spark</span>
+                            <span style="background: rgba(212,175,55,0.06); color: #666; padding: 3px 10px; border-radius: 10px; font-size: 0.7rem; font-family: monospace;">+ all OpenAI models</span>
+                        </div>
                         <div class="table-container">
                             <div style="overflow-x: auto;">
                                 <table id="accounts-table">
@@ -1134,37 +1124,21 @@ brew install claude-code</pre>
                             <div id="codex-add-status" style="margin-top: 15px;"></div>
                         </div>
 
-                        <!-- Add Claude Account -->
-                        <div class="step-label" style="margin-top: 30px;">Add Claude Account</div>
-                        <div id="claude-add-section" style="background: #0c0c0c; padding: 20px; border-radius: 6px; border: 1px solid #1a1a1a;">
-                            <div id="claude-add-init">
-                                <p style="color: var(--text-muted); font-size: 0.8rem; margin: 0 0 15px 0;">
-                                    Add a new Claude account via OAuth. Click the button to generate an authorization URL.
-                                </p>
-                                <button id="btn-claude-oauth" class="btn" onclick="startClaudeOAuth()" style="width: 100%;">Generate OAuth URL</button>
-                            </div>
-                            <div id="claude-add-oauth" style="display: none;">
-                                <p style="color: var(--text-muted); font-size: 0.75rem; margin: 0 0 10px 0; text-transform: uppercase;">1. Open this URL in your browser:</p>
-                                <div style="position: relative; margin-bottom: 15px;">
-                                    <pre id="claude-oauth-url" style="background: #050505; padding: 12px; overflow-x: auto; font-size: 0.7rem; color: var(--gold-bright); white-space: nowrap; margin: 0;"></pre>
-                                    <button class="copy-btn" onclick="copyToClipboard('claude-oauth-url', this)" style="position: absolute; top: 8px; right: 8px;">Copy</button>
-                                </div>
-                                <p style="color: var(--text-muted); font-size: 0.75rem; margin: 0 0 10px 0; text-transform: uppercase;">2. After logging in, get a code and paste it here:</p>
-                                <input type="text" id="claude-callback-url" placeholder="code or code#state (or full callback URL)" style="width: 100%; margin-bottom: 15px; font-size: 0.8rem; text-align: left;">
-                                <button id="btn-claude-exchange" class="btn" onclick="exchangeClaudeCode()" style="width: 100%;">Add Account</button>
-                                <button class="btn" onclick="cancelClaudeOAuth()" style="width: 100%; margin-top: 10px; background: transparent; border: 1px solid #333; color: var(--text-muted);">Cancel</button>
-                            </div>
-                            <div id="claude-add-status" style="margin-top: 15px;"></div>
-                        </div>
-
-                        <!-- Claude Accounts -->
+                        <!-- CLAUDE SECTION -->
                         <div class="step-label" style="margin-top: 40px;">Claude Accounts</div>
                         <div id="claude-section">
+                            <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px;">
+                                <span style="background: rgba(139,92,246,0.1); color: #a78bfa; padding: 3px 10px; border-radius: 10px; font-size: 0.7rem; font-family: monospace;">haiku</span>
+                                <span style="background: rgba(139,92,246,0.1); color: #a78bfa; padding: 3px 10px; border-radius: 10px; font-size: 0.7rem; font-family: monospace;">sonnet</span>
+                                <span style="background: rgba(139,92,246,0.1); color: #a78bfa; padding: 3px 10px; border-radius: 10px; font-size: 0.7rem; font-family: monospace;">opus</span>
+                                <span style="background: rgba(59,130,246,0.1); color: #60a5fa; padding: 3px 10px; border-radius: 10px; font-size: 0.7rem; font-family: monospace;">kimi</span>
+                                <span style="background: rgba(245,158,11,0.1); color: #fbbf24; padding: 3px 10px; border-radius: 10px; font-size: 0.7rem; font-family: monospace;">minimax</span>
+                            </div>
                             <div id="claude-empty" style="color: var(--text-muted); font-style: italic; padding: 20px; text-align: center;">No Claude accounts configured</div>
                             <div id="claude-content" style="display: none;">
                                 <div style="background: #0c0c0c; padding: 15px; border-radius: 6px; border: 1px solid #1a1a1a; margin-bottom: 15px;">
                                     <div style="display: flex; justify-content: space-between; align-items: center;">
-                                        <span style="color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase;">5hr / 7day Usage</span>
+                                        <span style="color: var(--text-muted); font-size: 0.75rem; text-transform: uppercase;">Avg 5hr / 7day</span>
                                         <span id="claude-usage-pct" style="font-family: 'Space Mono', monospace; color: var(--text-main); font-size: 0.9rem;">-</span>
                                     </div>
                                 </div>
@@ -1186,11 +1160,39 @@ brew install claude-code</pre>
                                     </div>
                                 </div>
                             </div>
+                            <!-- Add Claude Account -->
+                            <div style="margin-top: 15px;">
+                                <div id="claude-add-section" style="background: #0c0c0c; padding: 20px; border-radius: 6px; border: 1px solid #1a1a1a;">
+                                    <div id="claude-add-init">
+                                        <p style="color: var(--text-muted); font-size: 0.8rem; margin: 0 0 15px 0;">
+                                            Add a new Claude account via OAuth.
+                                        </p>
+                                        <button id="btn-claude-oauth" class="btn" onclick="startClaudeOAuth()" style="width: 100%;">Generate OAuth URL</button>
+                                    </div>
+                                    <div id="claude-add-oauth" style="display: none;">
+                                        <p style="color: var(--text-muted); font-size: 0.75rem; margin: 0 0 10px 0; text-transform: uppercase;">1. Open this URL in your browser:</p>
+                                        <div style="position: relative; margin-bottom: 15px;">
+                                            <pre id="claude-oauth-url" style="background: #050505; padding: 12px; overflow-x: auto; font-size: 0.7rem; color: var(--gold-bright); white-space: nowrap; margin: 0;"></pre>
+                                            <button class="copy-btn" onclick="copyToClipboard('claude-oauth-url', this)" style="position: absolute; top: 8px; right: 8px;">Copy</button>
+                                        </div>
+                                        <p style="color: var(--text-muted); font-size: 0.75rem; margin: 0 0 10px 0; text-transform: uppercase;">2. After logging in, get a code and paste it here:</p>
+                                        <input type="text" id="claude-callback-url" placeholder="code or code#state (or full callback URL)" style="width: 100%; margin-bottom: 15px; font-size: 0.8rem; text-align: left;">
+                                        <button id="btn-claude-exchange" class="btn" onclick="exchangeClaudeCode()" style="width: 100%;">Add Account</button>
+                                        <button class="btn" onclick="cancelClaudeOAuth()" style="width: 100%; margin-top: 10px; background: transparent; border: 1px solid #333; color: var(--text-muted);">Cancel</button>
+                                    </div>
+                                    <div id="claude-add-status" style="margin-top: 15px;"></div>
+                                </div>
+                            </div>
                         </div>
 
-                        <!-- Gemini Accounts -->
+                        <!-- GEMINI SECTION -->
                         <div class="step-label" style="margin-top: 40px;">Gemini Accounts</div>
                         <div id="gemini-section">
+                            <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px;">
+                                <span style="background: rgba(52,211,153,0.1); color: #34d399; padding: 3px 10px; border-radius: 10px; font-size: 0.7rem; font-family: monospace;">gemini-2.5-pro</span>
+                                <span style="background: rgba(52,211,153,0.1); color: #34d399; padding: 3px 10px; border-radius: 10px; font-size: 0.7rem; font-family: monospace;">gemini-2.5-flash</span>
+                                <span style="background: rgba(52,211,153,0.06); color: #666; padding: 3px 10px; border-radius: 10px; font-size: 0.7rem; font-family: monospace;">+ all Gemini models</span>
+                            </div>
                             <div id="gemini-empty" style="color: var(--text-muted); font-style: italic; padding: 20px; text-align: center;">No Gemini accounts configured</div>
                             <div id="gemini-content" style="display: none;">
                                 <div style="background: #0c0c0c; padding: 15px; border-radius: 6px; border: 1px solid #1a1a1a; margin-bottom: 15px;">
@@ -1212,6 +1214,36 @@ brew install claude-code</pre>
                                             <tbody id="gemini-tbody"></tbody>
                                         </table>
                                     </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- KIMI SECTION -->
+                        <div class="step-label" style="margin-top: 40px;">Kimi</div>
+                        <div id="kimi-section">
+                            <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px;">
+                                <span style="background: rgba(59,130,246,0.1); color: #60a5fa; padding: 3px 10px; border-radius: 10px; font-size: 0.7rem; font-family: monospace;">kimi-for-coding</span>
+                                <span style="background: rgba(59,130,246,0.1); color: #60a5fa; padding: 3px 10px; border-radius: 10px; font-size: 0.7rem; font-family: monospace;">kimi</span>
+                            </div>
+                            <div id="kimi-empty" style="color: var(--text-muted); font-style: italic; padding: 20px; text-align: center;">No Kimi accounts configured</div>
+                            <div id="kimi-content" style="display: none;">
+                                <div style="background: #0c0c0c; padding: 15px; border-radius: 6px; border: 1px solid #1a1a1a;">
+                                    <div id="kimi-accounts-list"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- MINIMAX SECTION -->
+                        <div class="step-label" style="margin-top: 40px;">MiniMax</div>
+                        <div id="minimax-section">
+                            <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px;">
+                                <span style="background: rgba(245,158,11,0.1); color: #fbbf24; padding: 3px 10px; border-radius: 10px; font-size: 0.7rem; font-family: monospace;">minimax-m2.5</span>
+                                <span style="background: rgba(245,158,11,0.1); color: #fbbf24; padding: 3px 10px; border-radius: 10px; font-size: 0.7rem; font-family: monospace;">minimax</span>
+                            </div>
+                            <div id="minimax-empty" style="color: var(--text-muted); font-style: italic; padding: 20px; text-align: center;">No MiniMax accounts configured</div>
+                            <div id="minimax-content" style="display: none;">
+                                <div style="background: #0c0c0c; padding: 15px; border-radius: 6px; border: 1px solid #1a1a1a;">
+                                    <div id="minimax-accounts-list"></div>
                                 </div>
                             </div>
                         </div>
@@ -1615,13 +1647,37 @@ $env:CLAUDE_CODE_OAUTH_TOKEN = "${claudeApiKey}"`;
                 document.getElementById('stats-loading').style.display = 'none';
                 document.getElementById('stats-content').style.display = 'block';
 
-                // Filter to codex accounts only
-                const codexAccounts = stats.accounts.filter(a => a.type === 'codex');
-                const activeCodex = codexAccounts.filter(a => a.status === 'healthy').length;
+                // All accounts across all providers
+                const allAccounts = stats.accounts || [];
+                const activeAll = allAccounts.filter(a => a.status === 'healthy').length;
 
-                document.getElementById('stat-total-accounts').textContent = codexAccounts.length;
-                document.getElementById('stat-active-accounts').textContent = activeCodex;
+                document.getElementById('stat-total-accounts').textContent = allAccounts.length;
+                document.getElementById('stat-active-accounts').textContent = activeAll;
                 document.getElementById('stat-pool-users').textContent = stats.total_pool_users;
+
+                // Provider breakdown badges
+                const providerCounts = {};
+                allAccounts.forEach(a => { providerCounts[a.type] = (providerCounts[a.type] || 0) + 1; });
+                const providerColors = {
+                    codex:   { bg: 'rgba(212, 175, 55, 0.15)', fg: '#d4af37' },
+                    claude:  { bg: 'rgba(139, 92, 246, 0.15)', fg: '#a78bfa' },
+                    gemini:  { bg: 'rgba(52, 211, 153, 0.15)', fg: '#34d399' },
+                    kimi:    { bg: 'rgba(59, 130, 246, 0.15)', fg: '#60a5fa' },
+                    minimax: { bg: 'rgba(245, 158, 11, 0.15)', fg: '#fbbf24' }
+                };
+                const breakdownEl = document.getElementById('provider-breakdown');
+                breakdownEl.innerHTML = '';
+                const providerOrder = ['codex', 'claude', 'gemini', 'kimi', 'minimax'];
+                providerOrder.forEach(type => {
+                    const count = providerCounts[type];
+                    if (!count) return;
+                    const healthy = allAccounts.filter(a => a.type === type && a.status === 'healthy').length;
+                    const colors = providerColors[type] || { bg: 'rgba(128,128,128,0.15)', fg: '#888' };
+                    breakdownEl.innerHTML += `<span style="background: ${colors.bg}; color: ${colors.fg}; padding: 4px 14px; border-radius: 12px; font-size: 0.8rem; font-family: 'Space Mono', monospace;">${type} <span style="font-weight: bold;">${healthy}</span><span style="opacity: 0.5;">/${count}</span></span>`;
+                });
+
+                // Codex accounts for rate limit calculations
+                const codexAccounts = allAccounts.filter(a => a.type === 'codex');
 
                 // Token usage stats
                 const agg = stats.aggregate || {};
@@ -1630,71 +1686,32 @@ $env:CLAUDE_CODE_OAUTH_TOKEN = "${claudeApiKey}"`;
                 document.getElementById('stat-cached-tokens').textContent = formatNumber(agg.total_cached_tokens || 0);
                 document.getElementById('stat-billable-tokens').textContent = formatNumber(agg.total_billable_tokens || 0);
 
-                // Capacity analysis
-                if (stats.capacity_analysis && stats.capacity_analysis.total_samples > 0) {
-                    document.getElementById('capacity-section').style.display = 'block';
-                    document.getElementById('capacity-samples').textContent = stats.capacity_analysis.total_samples;
-                    document.getElementById('capacity-formula').textContent = stats.capacity_analysis.model_formula;
-
-                    const plansDiv = document.getElementById('capacity-plans');
-                    plansDiv.innerHTML = '';
-                    const planOrder = ['team', 'pro', 'plus'];
-                    const sortedPlans = Object.entries(stats.capacity_analysis.plans || {}).sort((a, b) => {
-                        return planOrder.indexOf(a[0]) - planOrder.indexOf(b[0]);
-                    });
-
-                    for (const [plan, info] of sortedPlans) {
-                        const confColor = info.confidence === 'high' ? '#27ae60' : (info.confidence === 'medium' ? '#f39c12' : '#888');
-                        const cap5h = info.estimated_5h_capacity > 0 ? formatNumber(info.estimated_5h_capacity) : '—';
-                        const cap7d = info.estimated_7d_capacity > 0 ? formatNumber(info.estimated_7d_capacity) : '—';
-                        plansDiv.innerHTML += `
-                            <div style="display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #1a1a1a;">
-                                <span style="text-transform: uppercase; font-weight: bold; color: #aaa;">${plan}</span>
-                                <span style="color: ${confColor};">● ${info.confidence}</span>
-                                <span style="color: var(--text-muted);">${info.sample_count} samples</span>
-                                <span style="color: var(--gold-bright);">5h: ${cap5h}</span>
-                                <span style="color: #9b59b6;">7d: ${cap7d}</span>
-                                <span style="color: #888;">${info.output_multiplier.toFixed(1)}× out</span>
-                            </div>
-                        `;
-                    }
-                }
-
                 // Calculate averages for codex accounts (exclude dead and 0% accounts)
                 let primarySum = 0, primaryCount = 0;
                 let secondarySum = 0, secondaryCount = 0;
                 for (const acc of codexAccounts) {
                     if (acc.status !== 'dead') {
-                        if (acc.primary_window_used_pct > 0) {
-                            primarySum += acc.primary_window_used_pct;
-                            primaryCount++;
-                        }
-                        if (acc.secondary_window_used_pct > 0) {
-                            secondarySum += acc.secondary_window_used_pct;
-                            secondaryCount++;
-                        }
+                        if (acc.primary_window_used_pct > 0) { primarySum += acc.primary_window_used_pct; primaryCount++; }
+                        if (acc.secondary_window_used_pct > 0) { secondarySum += acc.secondary_window_used_pct; secondaryCount++; }
                     }
                 }
                 const primaryPct = primaryCount > 0 ? Math.min(primarySum / primaryCount, 100) : 0;
                 const secondaryPct = secondaryCount > 0 ? Math.min(secondarySum / secondaryCount, 100) : 0;
 
-                // Calculate average week elapsed from reset times
-                let weekElapsedSum = 0, weekElapsedCount = 0;
-                for (const acc of codexAccounts) {
-                    if (acc.status !== 'dead' && acc.secondary_reset_minutes > 0) {
-                        const elapsed = (10080 - acc.secondary_reset_minutes) / 10080 * 100;
-                        weekElapsedSum += elapsed;
-                        weekElapsedCount++;
-                    }
-                }
-                const weekElapsedPct = weekElapsedCount > 0 ? weekElapsedSum / weekElapsedCount : 0;
-
                 document.getElementById('bar-primary').style.width = primaryPct + '%';
                 document.getElementById('bar-secondary').style.width = secondaryPct + '%';
-                document.getElementById('bar-week-elapsed').style.width = weekElapsedPct + '%';
                 document.getElementById('pct-primary').textContent = primaryPct.toFixed(0) + '%';
                 document.getElementById('pct-secondary').textContent = secondaryPct.toFixed(0) + '%';
-                document.getElementById('pct-week-elapsed').textContent = weekElapsedPct.toFixed(0) + '%';
+
+                // Pace color helper
+                const getPaceColor = (usedPct, resetMins, windowMins) => {
+                    if (usedPct <= 0) return 'inherit';
+                    const elapsed = resetMins > 0 ? (windowMins - resetMins) / windowMins * 100 : 0;
+                    const overuse = usedPct - elapsed;
+                    if (overuse <= 0) return '#27ae60';
+                    if (overuse < 20) return '#f39c12';
+                    return '#c0392b';
+                };
 
                 const tbody = document.getElementById('accounts-tbody');
                 tbody.innerHTML = '';
@@ -1703,29 +1720,11 @@ $env:CLAUDE_CODE_OAUTH_TOKEN = "${claudeApiKey}"`;
                     const pri5hrReset = acc.primary_reset_minutes > 0 ? formatDuration(acc.primary_reset_minutes) : '-';
                     const weekReset = acc.secondary_reset_minutes > 0 ? formatDuration(acc.secondary_reset_minutes) : '-';
                     const tokens = acc.total_billable_tokens > 0 ? formatNumber(acc.total_billable_tokens) : '0';
-
-                    // Calculate if usage is outpacing the cycle
-                    // 5hr window = 300 minutes, weekly = 10080 minutes
-                    const pri5hrElapsed = acc.primary_reset_minutes > 0 ? (300 - acc.primary_reset_minutes) / 300 * 100 : 0;
-                    const weekElapsed = acc.secondary_reset_minutes > 0 ? (10080 - acc.secondary_reset_minutes) / 10080 * 100 : 0;
-
-                    // If usage % > elapsed %, we're over-using
-                    const priOveruse = acc.primary_window_used_pct - pri5hrElapsed;
-                    const weekOveruse = acc.secondary_window_used_pct - weekElapsed;
-
-                    // Color: green if under pace, yellow if slightly over, red if way over
-                    const getPaceColor = (overuse) => {
-                        if (overuse <= 0) return '#27ae60'; // Under pace - green
-                        if (overuse < 20) return '#f39c12'; // Slightly over - yellow
-                        return '#c0392b'; // Way over - red
-                    };
-                    const priColor = acc.primary_window_used_pct > 0 ? getPaceColor(priOveruse) : 'inherit';
-                    const weekColor = acc.secondary_window_used_pct > 0 ? getPaceColor(weekOveruse) : 'inherit';
-
-                    // Format score and highlight primary account
+                    const priColor = getPaceColor(acc.primary_window_used_pct, acc.primary_reset_minutes, 300);
+                    const weekColor = getPaceColor(acc.secondary_window_used_pct, acc.secondary_reset_minutes, 10080);
                     const scoreDisplay = acc.score > 0 ? acc.score.toFixed(2) : '-';
                     const scoreColor = acc.is_primary ? 'var(--gold-bright)' : (acc.score > 0.5 ? '#27ae60' : '#888');
-                    const rowStyle = acc.is_primary ? 'background: rgba(212, 175, 55, 0.1);' : '';
+                    const rowStyle = acc.is_primary ? 'background: rgba(212, 175, 55, 0.05);' : '';
                     const primaryBadge = acc.is_primary ? ' <span style="color: var(--gold-bright); font-size: 0.6rem;">★</span>' : '';
 
                     const row = document.createElement('tr');
@@ -1743,7 +1742,7 @@ $env:CLAUDE_CODE_OAUTH_TOKEN = "${claudeApiKey}"`;
                 }
 
                 // Populate Claude accounts
-                const claudeAccounts = stats.accounts.filter(a => a.type === 'claude');
+                const claudeAccounts = allAccounts.filter(a => a.type === 'claude');
                 if (claudeAccounts.length > 0) {
                     document.getElementById('claude-empty').style.display = 'none';
                     document.getElementById('claude-content').style.display = 'block';
@@ -1790,12 +1789,11 @@ $env:CLAUDE_CODE_OAUTH_TOKEN = "${claudeApiKey}"`;
                 }
 
                 // Populate Gemini accounts
-                const geminiAccounts = stats.accounts.filter(a => a.type === 'gemini');
+                const geminiAccounts = allAccounts.filter(a => a.type === 'gemini');
                 if (geminiAccounts.length > 0) {
                     document.getElementById('gemini-empty').style.display = 'none';
                     document.getElementById('gemini-content').style.display = 'block';
 
-                    // Calculate total tokens for Gemini
                     let geminiTotalTokens = 0;
                     geminiAccounts.forEach(acc => geminiTotalTokens += acc.total_billable_tokens);
                     document.getElementById('gemini-usage-pct').textContent = formatNumber(geminiTotalTokens) + ' tokens';
@@ -1812,6 +1810,44 @@ $env:CLAUDE_CODE_OAUTH_TOKEN = "${claudeApiKey}"`;
                             <td style="text-align: right; font-family: monospace; color: var(--gold-dim);">${tokens}</td>
                         `;
                         geminiTbody.appendChild(row);
+                    }
+                }
+
+                // Populate Kimi accounts
+                const kimiAccounts = allAccounts.filter(a => a.type === 'kimi');
+                if (kimiAccounts.length > 0) {
+                    document.getElementById('kimi-empty').style.display = 'none';
+                    document.getElementById('kimi-content').style.display = 'block';
+                    const kimiList = document.getElementById('kimi-accounts-list');
+                    kimiList.innerHTML = '';
+                    for (const acc of kimiAccounts) {
+                        const statusColor = acc.status === 'healthy' ? '#27ae60' : (acc.status === 'degraded' ? '#f39c12' : '#c0392b');
+                        const tokens = acc.total_billable_tokens > 0 ? formatNumber(acc.total_billable_tokens) : '0';
+                        kimiList.innerHTML += `
+                            <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; ${kimiAccounts.indexOf(acc) < kimiAccounts.length - 1 ? 'border-bottom: 1px solid #1a1a1a;' : ''}">
+                                <span style="font-family: monospace; color: #888; font-size: 0.85rem;">${acc.id}</span>
+                                <span style="color: ${statusColor}; text-transform: uppercase; font-weight: bold; font-size: 0.7rem;">${acc.status}</span>
+                                <span style="font-family: monospace; color: #60a5fa; font-size: 0.85rem;">${tokens} tokens</span>
+                            </div>`;
+                    }
+                }
+
+                // Populate MiniMax accounts
+                const minimaxAccounts = allAccounts.filter(a => a.type === 'minimax');
+                if (minimaxAccounts.length > 0) {
+                    document.getElementById('minimax-empty').style.display = 'none';
+                    document.getElementById('minimax-content').style.display = 'block';
+                    const minimaxList = document.getElementById('minimax-accounts-list');
+                    minimaxList.innerHTML = '';
+                    for (const acc of minimaxAccounts) {
+                        const statusColor = acc.status === 'healthy' ? '#27ae60' : (acc.status === 'degraded' ? '#f39c12' : '#c0392b');
+                        const tokens = acc.total_billable_tokens > 0 ? formatNumber(acc.total_billable_tokens) : '0';
+                        minimaxList.innerHTML += `
+                            <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; ${minimaxAccounts.indexOf(acc) < minimaxAccounts.length - 1 ? 'border-bottom: 1px solid #1a1a1a;' : ''}">
+                                <span style="font-family: monospace; color: #888; font-size: 0.85rem;">${acc.id}</span>
+                                <span style="color: ${statusColor}; text-transform: uppercase; font-weight: bold; font-size: 0.7rem;">${acc.status}</span>
+                                <span style="font-family: monospace; color: #fbbf24; font-size: 0.85rem;">${tokens} tokens</span>
+                            </div>`;
                     }
                 }
 
