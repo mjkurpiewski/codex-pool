@@ -103,6 +103,7 @@ func (p *MinimaxProvider) ParseUsage(obj map[string]any) *RequestUsage {
 }
 
 func (p *MinimaxProvider) ParseUsageHeaders(acc *Account, headers http.Header) {
+	applyMinimaxRateLimits(acc, headers, time.Now())
 }
 
 func (p *MinimaxProvider) UpstreamURL(path string) *url.URL {

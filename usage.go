@@ -58,6 +58,13 @@ func parseTokenCountEvent(obj map[string]any) *RequestUsage {
 		}
 	}
 
+	// Extract model from info or top-level
+	if m, ok := info["model"].(string); ok && m != "" {
+		ru.Model = m
+	} else if m, ok := obj["model"].(string); ok && m != "" {
+		ru.Model = m
+	}
+
 	return ru
 }
 
@@ -69,10 +76,25 @@ func (h *proxyHandler) recordUsage(a *Account, ru RequestUsage) {
 	if h.store != nil {
 		_ = h.store.record(ru)
 	}
-	if h.cfg.debug {
-		log.Printf("token_count: account=%s plan=%s user=%s in=%d cached=%d out=%d reasoning=%d billable=%d primary=%.1f%% secondary=%.1f%%",
-			ru.AccountID, ru.PlanType, ru.UserID, ru.InputTokens, ru.CachedInputTokens, ru.OutputTokens, ru.ReasoningTokens, ru.BillableTokens,
-			ru.PrimaryUsedPct*100, ru.SecondaryUsedPct*100)
+
+	// Calculate and record cost
+	var costUSD float64
+	if h.pricing != nil && ru.Model != "" {
+		costUSD = h.pricing.calculateCost(ru)
+		if costUSD > 0 {
+			a.mu.Lock()
+			a.Totals.TotalCostEstimate += costUSD
+			a.mu.Unlock()
+		}
+	}
+	if h.analyticsStore != nil {
+		_ = h.analyticsStore.recordRequest(ru, costUSD)
+	}
+
+	if h.cfg.debug.Load() {
+		log.Printf("token_count: account=%s plan=%s user=%s model=%s in=%d cached=%d out=%d reasoning=%d billable=%d cost=$%.6f primary=%.1f%% secondary=%.1f%%",
+			ru.AccountID, ru.PlanType, ru.UserID, ru.Model, ru.InputTokens, ru.CachedInputTokens, ru.OutputTokens, ru.ReasoningTokens, ru.BillableTokens,
+			costUSD, ru.PrimaryUsedPct*100, ru.SecondaryUsedPct*100)
 	}
 }
 
@@ -98,6 +120,10 @@ func parseRequestUsage(obj map[string]any) *RequestUsage {
 	}
 	if v, ok := obj["prompt_cache_key"].(string); ok {
 		ru.PromptCacheKey = v
+	}
+	// Extract model from response object or top-level
+	if m, ok := obj["model"].(string); ok && m != "" {
+		ru.Model = m
 	}
 	return ru
 }

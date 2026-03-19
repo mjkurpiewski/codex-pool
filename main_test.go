@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/url"
 	"testing"
@@ -88,20 +89,18 @@ func TestExtractRequestedModelFromJSON(t *testing.T) {
 	}
 }
 
-func TestClaudeProviderParseUsageHeadersIgnored(t *testing.T) {
+func TestClaudeProviderParseUsageHeaders(t *testing.T) {
 	acc := &Account{Type: AccountTypeClaude}
 	provider := &ClaudeProvider{}
-	retrievedAt := time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Second)
-	primaryReset := time.Now().UTC().Add(2 * time.Hour).Truncate(time.Second)
-	secondaryReset := time.Now().UTC().Add(3 * 24 * time.Hour).Truncate(time.Second)
+	initialAt := time.Now().UTC().Add(-10 * time.Minute).Truncate(time.Second)
 	acc.Usage = UsageSnapshot{
 		PrimaryUsedPercent:   0.25,
 		SecondaryUsedPercent: 0.33,
 		PrimaryUsed:          0.25,
 		SecondaryUsed:        0.33,
-		PrimaryResetAt:       primaryReset,
-		SecondaryResetAt:     secondaryReset,
-		RetrievedAt:          retrievedAt,
+		PrimaryResetAt:       initialAt,
+		SecondaryResetAt:     initialAt,
+		RetrievedAt:          initialAt,
 		Source:               "claude-api",
 	}
 
@@ -112,20 +111,45 @@ func TestClaudeProviderParseUsageHeadersIgnored(t *testing.T) {
 		"anthropic-ratelimit-unified-requests-reset":       "9999999999",
 	}))
 
-	if acc.Usage.PrimaryUsedPercent != 0.25 {
+	if math.Abs(acc.Usage.PrimaryUsedPercent-0.999) > 1e-9 {
 		t.Fatalf("primary percent = %v", acc.Usage.PrimaryUsedPercent)
 	}
-	if acc.Usage.SecondaryUsedPercent != 0.33 {
+	if math.Abs(acc.Usage.SecondaryUsedPercent-0.888) > 1e-9 {
 		t.Fatalf("secondary percent = %v", acc.Usage.SecondaryUsedPercent)
 	}
-	if acc.Usage.PrimaryResetAt.UTC().Unix() != primaryReset.Unix() {
-		t.Fatalf("primary reset = %v want %v", acc.Usage.PrimaryResetAt.UTC(), primaryReset)
+	if acc.Usage.PrimaryResetAt.UTC().Unix() != 9999999999 {
+		t.Fatalf("primary reset = %v want %v", acc.Usage.PrimaryResetAt.UTC(), time.Unix(9999999999, 0).UTC())
 	}
-	if acc.Usage.SecondaryResetAt.UTC().Unix() != secondaryReset.Unix() {
-		t.Fatalf("secondary reset = %v want %v", acc.Usage.SecondaryResetAt.UTC(), secondaryReset)
+	if acc.Usage.SecondaryResetAt.UTC().Unix() != 9999999999 {
+		t.Fatalf("secondary reset = %v want %v", acc.Usage.SecondaryResetAt.UTC(), time.Unix(9999999999, 0).UTC())
 	}
-	if acc.Usage.RetrievedAt.UTC().Unix() != retrievedAt.Unix() {
-		t.Fatalf("retrieved_at = %v want %v", acc.Usage.RetrievedAt.UTC(), retrievedAt)
+	if acc.Usage.Source != "headers" {
+		t.Fatalf("source = %q", acc.Usage.Source)
+	}
+	if !acc.Usage.RetrievedAt.After(initialAt) {
+		t.Fatalf("retrieved_at should be updated from headers: %v", acc.Usage.RetrievedAt.UTC())
+	}
+}
+
+func TestKimiProviderParseUsageHeaders(t *testing.T) {
+	acc := &Account{Type: AccountTypeKimi}
+	provider := &KimiProvider{}
+	provider.ParseUsageHeaders(acc, mapToHeader(map[string]string{
+		"x-ratelimit-remaining-requests": "90",
+		"x-ratelimit-limit-requests":     "100",
+		"x-ratelimit-remaining-tokens":   "400",
+		"x-ratelimit-limit-tokens":       "500",
+		"x-ratelimit-reset-requests":     "9999999999",
+	}))
+
+	if acc.Usage.PrimaryUsedPercent != 0.1 {
+		t.Fatalf("primary percent = %v", acc.Usage.PrimaryUsedPercent)
+	}
+	if acc.Usage.SecondaryUsedPercent != 0.2 {
+		t.Fatalf("secondary percent = %v", acc.Usage.SecondaryUsedPercent)
+	}
+	if acc.Usage.PrimaryResetAt.UTC().Unix() != 9999999999 {
+		t.Fatalf("primary reset = %v want %v", acc.Usage.PrimaryResetAt.UTC(), time.Unix(9999999999, 0).UTC())
 	}
 }
 

@@ -12,7 +12,7 @@ import (
 // servePoolUsersAdmin routes pool user admin requests (auth already checked by router)
 func (h *proxyHandler) servePoolUsersAdmin(w http.ResponseWriter, r *http.Request) {
 	if h.poolUsers == nil {
-		http.Error(w, "pool users not configured", http.StatusServiceUnavailable)
+		respondJSONError(w, http.StatusServiceUnavailable, "pool users not configured")
 		return
 	}
 
@@ -82,7 +82,7 @@ func (h *proxyHandler) handlePoolUsersCreate(w http.ResponseWriter, r *http.Requ
 
 	if r.Header.Get("Content-Type") == "application/json" {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
+			respondJSONError(w, http.StatusBadRequest, "invalid json: "+err.Error())
 			return
 		}
 	} else {
@@ -97,7 +97,7 @@ func (h *proxyHandler) handlePoolUsersCreate(w http.ResponseWriter, r *http.Requ
 	}
 
 	if email == "" {
-		http.Error(w, "email is required", http.StatusBadRequest)
+		respondJSONError(w, http.StatusBadRequest, "email is required")
 		return
 	}
 
@@ -110,7 +110,7 @@ func (h *proxyHandler) handlePoolUsersCreate(w http.ResponseWriter, r *http.Requ
 	}
 
 	if err := h.poolUsers.Create(user); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		respondJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -135,7 +135,7 @@ func (h *proxyHandler) handlePoolUsersCreate(w http.ResponseWriter, r *http.Requ
 // DELETE /admin/pool-users/:id - disable/delete a pool user
 func (h *proxyHandler) handlePoolUserDelete(w http.ResponseWriter, r *http.Request, id string) {
 	if err := h.poolUsers.Disable(id); err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		respondJSONError(w, http.StatusNotFound, err.Error())
 		return
 	}
 
@@ -149,7 +149,7 @@ func (h *proxyHandler) handlePoolUserDelete(w http.ResponseWriter, r *http.Reque
 
 func (h *proxyHandler) serveConfigDownload(w http.ResponseWriter, r *http.Request) {
 	if h.poolUsers == nil {
-		http.Error(w, "pool users not configured", http.StatusServiceUnavailable)
+		respondJSONError(w, http.StatusServiceUnavailable, "pool users not configured")
 		return
 	}
 
@@ -174,23 +174,23 @@ func (h *proxyHandler) serveConfigDownload(w http.ResponseWriter, r *http.Reques
 
 	token = strings.TrimSuffix(token, "/")
 	if token == "" {
-		http.Error(w, "token required", http.StatusBadRequest)
+		respondJSONError(w, http.StatusBadRequest, "token required")
 		return
 	}
 
 	user := h.poolUsers.GetByToken(token)
 	if user == nil {
-		http.Error(w, "invalid token", http.StatusNotFound)
+		respondJSONError(w, http.StatusNotFound, "invalid token")
 		return
 	}
 	if user.Disabled {
-		http.Error(w, "user disabled", http.StatusForbidden)
+		respondJSONError(w, http.StatusForbidden, "user disabled")
 		return
 	}
 
 	secret := getPoolJWTSecret()
 	if secret == "" {
-		http.Error(w, "JWT secret not configured", http.StatusServiceUnavailable)
+		respondJSONError(w, http.StatusServiceUnavailable, "JWT secret not configured")
 		return
 	}
 
@@ -200,21 +200,21 @@ func (h *proxyHandler) serveConfigDownload(w http.ResponseWriter, r *http.Reques
 	case "codex":
 		auth, err := generateCodexAuth(secret, user)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			respondJSONError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		json.NewEncoder(w).Encode(auth)
 	case "gemini":
 		auth, err := generateGeminiAuth(secret, user)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			respondJSONError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		json.NewEncoder(w).Encode(auth)
 	case "claude":
 		auth, err := generateClaudeAuth(secret, user)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			respondJSONError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		json.NewEncoder(w).Encode(auth)

@@ -284,14 +284,14 @@ func generateCodexAccountID(idToken string) string {
 		return fmt.Sprintf("codex_%d", time.Now().Unix())
 	}
 
-	var payload map[string]interface{}
+	var payload map[string]any
 	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
 		return fmt.Sprintf("codex_%d", time.Now().Unix())
 	}
 
 	// Try to get email from profile claim
 	email := ""
-	if profile, ok := payload["https://api.openai.com/profile"].(map[string]interface{}); ok {
+	if profile, ok := payload["https://api.openai.com/profile"].(map[string]any); ok {
 		if e, ok := profile["email"].(string); ok {
 			email = e
 		}

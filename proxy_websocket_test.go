@@ -34,6 +34,8 @@ func TestIsWebSocketUpgradeRequest(t *testing.T) {
 }
 
 func TestProxyWebSocketPoolRewritesAuthAndPinsSession(t *testing.T) {
+	t.Setenv("POOL_JWT_SECRET", "test-secret")
+
 	type upstreamReq struct {
 		path       string
 		auth       string
@@ -76,7 +78,7 @@ func TestProxyWebSocketPoolRewritesAuthAndPinsSession(t *testing.T) {
 	pool := newPoolState([]*Account{acc}, false)
 
 	h := &proxyHandler{
-		cfg: config{
+		cfg: &config{
 			requestTimeout:       5 * time.Second,
 			maxInMemoryBodyBytes: 1024,
 		},
@@ -91,7 +93,7 @@ func TestProxyWebSocketPoolRewritesAuthAndPinsSession(t *testing.T) {
 	defer proxy.Close()
 
 	statusLine := performRawWebSocketHandshake(t, proxy.URL, "/responses", map[string]string{
-		"Authorization": "Bearer client-token-should-be-overwritten",
+		"Authorization": "Bearer " + generateClaudePoolToken("test-secret", "ws-user"),
 		"session_id":    "thread-ws-1",
 	})
 	if !strings.Contains(statusLine, "101") {
@@ -148,7 +150,7 @@ func TestProxyWebSocketPassthroughPreservesAuthorization(t *testing.T) {
 	registry := NewProviderRegistry(codex, claude, gemini)
 
 	h := &proxyHandler{
-		cfg: config{
+		cfg: &config{
 			requestTimeout:       5 * time.Second,
 			maxInMemoryBodyBytes: 1024,
 		},

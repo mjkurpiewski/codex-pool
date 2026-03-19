@@ -62,6 +62,7 @@ func (p *ClaudeProvider) LoadAccount(name, path string, data []byte) (*Account, 
 		if acc.PlanType == "" {
 			acc.PlanType = "claude"
 		}
+		acc.RateLimitTier = cj.ClaudeAiOauth.RateLimitTier
 		return acc, nil
 	}
 
@@ -127,6 +128,10 @@ func (p *ClaudeProvider) ParseUsage(obj map[string]any) *RequestUsage {
 		ru := &RequestUsage{Timestamp: time.Now()}
 		ru.InputTokens = readInt64(usageMap, "input_tokens")
 		ru.CachedInputTokens = readInt64(usageMap, "cache_read_input_tokens")
+		if ru.CachedInputTokens == 0 {
+			// Fall back to cache_creation_input_tokens when read tokens are absent
+			ru.CachedInputTokens = readInt64(usageMap, "cache_creation_input_tokens")
+		}
 		if ru.InputTokens == 0 {
 			return nil
 		}
@@ -143,9 +148,14 @@ func (p *ClaudeProvider) ParseUsage(obj map[string]any) *RequestUsage {
 }
 
 func (p *ClaudeProvider) ParseUsageHeaders(acc *Account, headers http.Header) {
-	// Claude usage should come from the periodic /api/oauth/usage poller only.
-	_ = acc
-	_ = headers
+	snap, ok := parseClaudeResponseRateLimits(headers)
+	if !ok {
+		return
+	}
+	acc.mu.Lock()
+	acc.Usage = mergeUsage(acc.Usage, snap)
+	acc.mu.Unlock()
+	syncUsageCooldown(acc)
 }
 
 func (p *ClaudeProvider) UpstreamURL(path string) *url.URL {
@@ -164,4 +174,144 @@ func (p *ClaudeProvider) NormalizePath(path string) string {
 func (p *ClaudeProvider) DetectsSSE(path string, contentType string) bool {
 	// Claude uses text/event-stream content type for SSE
 	return strings.Contains(strings.ToLower(contentType), "text/event-stream")
+}
+
+func parseClaudeResponseRateLimits(headers http.Header) (UsageSnapshot, bool) {
+	if headers == nil {
+		return UsageSnapshot{}, false
+	}
+
+	snap := UsageSnapshot{
+		RetrievedAt: time.Now(),
+		Source:      "headers",
+	}
+	usedPrimary := false
+	usedSecondary := false
+
+	primaryKeyChecks := []string{
+		"anthropic-ratelimit-unified-5h-utilization",
+		"anthropic-ratelimit-unified-primary-utilization",
+		"anthropic-ratelimit-unified-tokens-utilization",
+		"anthropic-ratelimit-tokens-utilization",
+	}
+	for _, key := range primaryKeyChecks {
+		if pct, ok := parseRateLimitPercent(headers.Get(key)); ok {
+			snap.PrimaryUsedPercent = pct
+			snap.PrimaryUsed = pct
+			usedPrimary = true
+			break
+		}
+	}
+	if !usedPrimary {
+		if pct, ok := parseRateLimitUsageFromRemainingLimit(headers, "anthropic-ratelimit-requests-remaining", "anthropic-ratelimit-requests-limit"); ok {
+			snap.PrimaryUsedPercent = pct
+			snap.PrimaryUsed = pct
+			usedPrimary = true
+		}
+	}
+	if !usedPrimary {
+		if pct, ok := parseRateLimitUsageFromRemainingLimit(headers, "x-ratelimit-remaining", "x-ratelimit-limit"); ok {
+			snap.PrimaryUsedPercent = pct
+			snap.PrimaryUsed = pct
+			usedPrimary = true
+		}
+	}
+
+	secondaryKeyChecks := []string{
+		"anthropic-ratelimit-unified-7d-utilization",
+		"anthropic-ratelimit-unified-secondary-utilization",
+		"anthropic-ratelimit-unified-requests-utilization",
+		"anthropic-ratelimit-requests-utilization",
+	}
+	for _, key := range secondaryKeyChecks {
+		if pct, ok := parseRateLimitPercent(headers.Get(key)); ok {
+			snap.SecondaryUsedPercent = pct
+			snap.SecondaryUsed = pct
+			usedSecondary = true
+			break
+		}
+	}
+	if !usedSecondary {
+		if pct, ok := parseRateLimitUsageFromRemainingLimit(headers, "anthropic-ratelimit-tokens-remaining", "anthropic-ratelimit-tokens-limit"); ok {
+			snap.SecondaryUsedPercent = pct
+			snap.SecondaryUsed = pct
+			usedSecondary = true
+		}
+	}
+	if !usedSecondary {
+		if pct, ok := parseRateLimitUsageFromRemainingLimit(headers, "x-ratelimit-remaining-requests", "x-ratelimit-limit-requests"); ok {
+			snap.SecondaryUsedPercent = pct
+			snap.SecondaryUsed = pct
+			usedSecondary = true
+		}
+	}
+	if !usedSecondary {
+		if pct, ok := parseRateLimitUsageFromRemainingLimit(headers, "x-ratelimit-remaining-tokens", "x-ratelimit-limit-tokens"); ok {
+			snap.SecondaryUsedPercent = pct
+			snap.SecondaryUsed = pct
+			usedSecondary = true
+		}
+	}
+
+	if !usedPrimary && !usedSecondary {
+		return UsageSnapshot{}, false
+	}
+
+	if resetStr := headers.Get("anthropic-ratelimit-unified-primary-reset"); resetStr != "" {
+		if resetAt, ok := parseRateLimitReset(resetStr); ok {
+			snap.PrimaryResetAt = resetAt
+		}
+	} else if resetStr := headers.Get("anthropic-ratelimit-unified-5h-reset"); resetStr != "" {
+		if resetAt, ok := parseRateLimitReset(resetStr); ok {
+			snap.PrimaryResetAt = resetAt
+		}
+	} else if resetStr := headers.Get("anthropic-ratelimit-unified-reset"); resetStr != "" {
+		if resetAt, ok := parseRateLimitReset(resetStr); ok {
+			snap.PrimaryResetAt = resetAt
+		}
+	} else if resetStr := headers.Get("anthropic-ratelimit-unified-tokens-reset"); resetStr != "" {
+		if resetAt, ok := parseRateLimitReset(resetStr); ok {
+			snap.PrimaryResetAt = resetAt
+		}
+	} else if resetStr := headers.Get("anthropic-ratelimit-tokens-reset"); resetStr != "" {
+		if resetAt, ok := parseRateLimitReset(resetStr); ok {
+			snap.PrimaryResetAt = resetAt
+		}
+	} else if resetStr := headers.Get("anthropic-ratelimit-requests-reset"); resetStr != "" {
+		if resetAt, ok := parseRateLimitReset(resetStr); ok {
+			snap.PrimaryResetAt = resetAt
+		}
+	} else if resetStr := headers.Get("x-ratelimit-reset"); resetStr != "" {
+		if resetAt, ok := parseRateLimitReset(resetStr); ok {
+			snap.PrimaryResetAt = resetAt
+		}
+	}
+
+	if resetStr := headers.Get("anthropic-ratelimit-unified-secondary-reset"); resetStr != "" {
+		if resetAt, ok := parseRateLimitReset(resetStr); ok {
+			snap.SecondaryResetAt = resetAt
+		}
+	} else if resetStr := headers.Get("anthropic-ratelimit-unified-requests-reset"); resetStr != "" {
+		if resetAt, ok := parseRateLimitReset(resetStr); ok {
+			snap.SecondaryResetAt = resetAt
+		}
+	} else if resetStr := headers.Get("anthropic-ratelimit-unified-7d-reset"); resetStr != "" {
+		if resetAt, ok := parseRateLimitReset(resetStr); ok {
+			snap.SecondaryResetAt = resetAt
+		}
+	} else if resetStr := headers.Get("anthropic-ratelimit-unified-reset"); resetStr != "" {
+		if resetAt, ok := parseRateLimitReset(resetStr); ok {
+			snap.SecondaryResetAt = resetAt
+		}
+	} else if resetStr := headers.Get("anthropic-ratelimit-requests-reset"); resetStr != "" {
+		if resetAt, ok := parseRateLimitReset(resetStr); ok {
+			snap.SecondaryResetAt = resetAt
+		}
+	} else if resetStr := headers.Get("x-ratelimit-reset"); resetStr != "" {
+		if resetAt, ok := parseRateLimitReset(resetStr); ok {
+			snap.SecondaryResetAt = resetAt
+		}
+	}
+
+	return snap, true
 }

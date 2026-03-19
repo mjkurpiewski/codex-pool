@@ -9,6 +9,12 @@ import (
 // checkAdminAuth verifies the admin token from header or query param.
 // Returns true if authorized, false if not (and sends 401 response).
 func (h *proxyHandler) checkAdminAuth(w http.ResponseWriter, r *http.Request) bool {
+	ip := getClientIP(r)
+	if h.bruteForce != nil && h.bruteForce.isBanned(ip) {
+		http.Error(w, "too many failed attempts, try again later", http.StatusTooManyRequests)
+		return false
+	}
+
 	if h.cfg.adminToken == "" {
 		// No admin token configured - deny all admin access
 		log.Printf("admin auth: no token configured")
@@ -22,13 +28,19 @@ func (h *proxyHandler) checkAdminAuth(w http.ResponseWriter, r *http.Request) bo
 		token = r.URL.Query().Get("admin_token")
 	}
 
-	if h.cfg.debug {
+	if h.cfg.debug.Load() {
 		log.Printf("admin auth: provided=%q configured=%q", token, h.cfg.adminToken)
 	}
 
 	if token != h.cfg.adminToken {
+		if h.bruteForce != nil {
+			h.bruteForce.recordFailure(ip)
+		}
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return false
+	}
+	if h.bruteForce != nil {
+		h.bruteForce.recordSuccess(ip)
 	}
 	return true
 }
@@ -37,6 +49,12 @@ func (h *proxyHandler) checkAdminAuth(w http.ResponseWriter, r *http.Request) bo
 // This is used for "pool stats" endpoints that are intended to be accessible in friend mode
 // (with the friend code) while still allowing admin access when configured.
 func (h *proxyHandler) checkAdminOrFriendAuth(w http.ResponseWriter, r *http.Request) bool {
+	ip := getClientIP(r)
+	if h.bruteForce != nil && h.bruteForce.isBanned(ip) {
+		http.Error(w, "too many failed attempts, try again later", http.StatusTooManyRequests)
+		return false
+	}
+
 	// If nothing is configured, treat as an open/local deployment.
 	if h.cfg.adminToken == "" && h.cfg.friendCode == "" {
 		return true
@@ -47,6 +65,9 @@ func (h *proxyHandler) checkAdminOrFriendAuth(w http.ResponseWriter, r *http.Req
 		headerToken := r.Header.Get("X-Admin-Token")
 		queryToken := r.URL.Query().Get("admin_token")
 		if headerToken == h.cfg.adminToken || queryToken == h.cfg.adminToken {
+			if h.bruteForce != nil {
+				h.bruteForce.recordSuccess(ip)
+			}
 			return true
 		}
 	}
@@ -56,10 +77,16 @@ func (h *proxyHandler) checkAdminOrFriendAuth(w http.ResponseWriter, r *http.Req
 		queryCode := r.URL.Query().Get("code")
 		headerCode := r.Header.Get("X-Friend-Code")
 		if queryCode == h.cfg.friendCode || headerCode == h.cfg.friendCode {
+			if h.bruteForce != nil {
+				h.bruteForce.recordSuccess(ip)
+			}
 			return true
 		}
 	}
 
+	if h.bruteForce != nil {
+		h.bruteForce.recordFailure(ip)
+	}
 	http.Error(w, "unauthorized", http.StatusUnauthorized)
 	return false
 }
@@ -67,7 +94,7 @@ func (h *proxyHandler) checkAdminOrFriendAuth(w http.ResponseWriter, r *http.Req
 // ServeHTTP routes incoming requests to the appropriate handler.
 func (h *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	reqID := randomID()
-	if h.cfg.debug {
+	if h.cfg.debug.Load() {
 		log.Printf("[%s] incoming %s %s", reqID, r.Method, r.URL.Path)
 	}
 
@@ -89,6 +116,9 @@ func (h *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleFriendClaim(w, r)
 		return
 	case "/api/pool/stats":
+		if !h.checkAdminOrFriendAuth(w, r) {
+			return
+		}
 		h.handlePoolStats(w, r)
 		return
 	case "/api/pool/whoami":
@@ -217,12 +247,18 @@ func (h *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// User daily usage: /api/pool/users/:id/daily
 	if strings.HasPrefix(r.URL.Path, "/api/pool/users/") && strings.HasSuffix(r.URL.Path, "/daily") {
+		if !h.checkAdminOrFriendAuth(w, r) {
+			return
+		}
 		h.handleUserDaily(w, r)
 		return
 	}
 
 	// User hourly usage: /api/pool/users/:id/hourly
 	if strings.HasPrefix(r.URL.Path, "/api/pool/users/") && strings.HasSuffix(r.URL.Path, "/hourly") {
+		if !h.checkAdminOrFriendAuth(w, r) {
+			return
+		}
 		h.handleUserHourly(w, r)
 		return
 	}
@@ -271,6 +307,24 @@ func (h *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Kimi account admin routes (friend auth - accessible from friend landing page)
+	if strings.HasPrefix(r.URL.Path, "/admin/kimi") {
+		if !h.checkAdminOrFriendAuth(w, r) {
+			return
+		}
+		h.serveKimiAdmin(w, r)
+		return
+	}
+
+	// MiniMax account admin routes (friend auth - accessible from friend landing page)
+	if strings.HasPrefix(r.URL.Path, "/admin/minimax") {
+		if !h.checkAdminOrFriendAuth(w, r) {
+			return
+		}
+		h.serveMinimaxAdmin(w, r)
+		return
+	}
+
 	// Config download routes (no auth - token is the auth)
 	if strings.HasPrefix(r.URL.Path, "/config/codex/") || strings.HasPrefix(r.URL.Path, "/config/gemini/") || strings.HasPrefix(r.URL.Path, "/config/claude/") {
 		h.serveConfigDownload(w, r)
@@ -285,7 +339,7 @@ func (h *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Special case: aggregate usage for client; do not hit upstream.
 	if isUsageRequest(r) {
-		h.refreshUsageIfStale()
+		h.pollUpstreamUsage()
 		h.handleAggregatedUsage(w, reqID)
 		return
 	}

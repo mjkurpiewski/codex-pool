@@ -40,7 +40,7 @@ type config struct {
 	disableRefresh  bool
 	refreshProxyURL string // HTTP proxy URL for refresh operations
 
-	debug                bool
+	debug                atomic.Bool
 	logBodies            bool
 	bodyLogLimit         int64
 	maxInMemoryBodyBytes int64
@@ -54,7 +54,7 @@ type config struct {
 	requestTimeout       time.Duration // Timeout for non-streaming requests (0 = no timeout)
 	streamTimeout        time.Duration // Timeout for streaming/SSE requests (0 = no timeout)
 	streamIdleTimeout    time.Duration // Kill SSE streams idle for this long (0 = no idle timeout)
-	tierThreshold        float64       // Secondary usage % at which we stop preferring a tier (default 0.15)
+	tierThreshold        float64       // Secondary usage % at which we stop preferring a tier (default 0.50)
 }
 
 func getenv(key, def string) string {
@@ -81,7 +81,8 @@ func parseInt64(s string) (int64, error) {
 // Global config file reference for pool users config
 var globalConfigFile *ConfigFile
 
-func buildConfig() config {
+func buildConfig() *config {
+	cfg := &config{}
 	// Load config.toml if it exists
 	configFile, err := loadConfigFile("config.toml")
 	if err != nil {
@@ -94,7 +95,6 @@ func buildConfig() config {
 		fileCfg = *configFile
 	}
 
-	cfg := config{}
 	cfg.listenAddr = getConfigString("PROXY_LISTEN_ADDR", fileCfg.ListenAddr, "127.0.0.1:8989")
 	cfg.responsesBase = mustParse(getenv("UPSTREAM_RESPONSES_BASE", "https://chatgpt.com/backend-api/codex"))
 	cfg.whamBase = mustParse(getenv("UPSTREAM_WHAM_BASE", "https://chatgpt.com/backend-api"))
@@ -110,7 +110,7 @@ func buildConfig() config {
 	cfg.disableRefresh = getConfigBool("PROXY_DISABLE_REFRESH", fileCfg.DisableRefresh, false)
 	cfg.refreshProxyURL = getConfigString("REFRESH_PROXY_URL", fileCfg.RefreshProxyURL, "")
 
-	cfg.debug = getConfigBool("PROXY_DEBUG", fileCfg.Debug, false)
+	cfg.debug.Store(getConfigBool("PROXY_DEBUG", fileCfg.Debug, false))
 	cfg.logBodies = getenv("PROXY_LOG_BODIES", "0") == "1"
 	cfg.bodyLogLimit = 16 * 1024 // 16 KiB
 	if v := getenv("PROXY_BODY_LOG_LIMIT", ""); v != "" {
@@ -147,9 +147,9 @@ func buildConfig() config {
 		}
 	}
 
-	// Request timeouts: default 5 min for regular requests, 0 (unlimited) for streaming.
-	// Set to 0 to disable timeout entirely.
-	cfg.requestTimeout = 5 * time.Minute
+	// Request timeouts default to disabled so long-running jobs can finish.
+	// Set a positive value to enable a hard timeout.
+	cfg.requestTimeout = 0
 	if v := getenv("PROXY_REQUEST_TIMEOUT_SECONDS", ""); v != "" {
 		if n, err := parseInt64(v); err == nil && n >= 0 {
 			cfg.requestTimeout = time.Duration(n) * time.Second
@@ -161,15 +161,15 @@ func buildConfig() config {
 			cfg.streamTimeout = time.Duration(n) * time.Second
 		}
 	}
-	cfg.streamIdleTimeout = 10 * time.Minute // Kill SSE streams that receive no data for this long
+	cfg.streamIdleTimeout = 0 // No idle timeout; allow long thinking/tool gaps on SSE streams
 	if v := getenv("STREAM_IDLE_TIMEOUT_SECONDS", ""); v != "" {
 		if n, err := parseInt64(v); err == nil && n >= 0 {
 			cfg.streamIdleTimeout = time.Duration(n) * time.Second
 		}
 	}
 
-	// Tier threshold: secondary usage % at which we stop preferring a tier (default 15%)
-	cfg.tierThreshold = getConfigFloat64("TIER_THRESHOLD", fileCfg.TierThreshold, 0.15)
+	// Tier threshold: secondary usage % at which we stop preferring a tier (default 50%)
+	cfg.tierThreshold = getConfigFloat64("TIER_THRESHOLD", fileCfg.TierThreshold, 0.50)
 
 	flag.StringVar(&cfg.listenAddr, "listen", cfg.listenAddr, "listen address")
 	flag.Parse()
@@ -192,7 +192,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("load pool: %v", err)
 	}
-	pool := newPoolState(accounts, cfg.debug)
+	pool := newPoolState(accounts, cfg.debug.Load())
 	pool.tierThreshold = cfg.tierThreshold
 	codexCount := pool.countByType(AccountTypeCodex)
 	claudeCount := pool.countByType(AccountTypeClaude)
@@ -283,6 +283,27 @@ func main() {
 		}
 	}
 
+	// Initialize pricing data
+	pricing := newPricingData()
+	pricing.startPricingRefresh()
+
+	// Initialize analytics store (SQLite)
+	analyticsDBPath := "./data/analytics.db"
+	analyticsStore, err := newAnalyticsStore(analyticsDBPath)
+	if err != nil {
+		log.Printf("warning: failed to open analytics store: %v (cost tracking disabled)", err)
+	} else {
+		defer analyticsStore.Close()
+		analyticsStore.seedFromBoltDB(store, pricing)
+		analyticsStore.startDailyRollup()
+		log.Printf("analytics store initialized at %s", analyticsDBPath)
+	}
+
+	var aliasesCfg map[string]string
+	if globalConfigFile != nil {
+		aliasesCfg = globalConfigFile.ModelAliases
+	}
+
 	h := &proxyHandler{
 		cfg:              cfg,
 		transport:        transport,
@@ -291,11 +312,26 @@ func main() {
 		poolUsers:        poolUsers,
 		registry:         registry,
 		store:            store,
+		analyticsStore:   analyticsStore,
+		pricing:          pricing,
+		aliases:          newModelAliases(aliasesCfg),
+		bruteForce:       newBruteForceTracker(),
 		metrics:          newMetrics(),
 		recent:           newRecentErrors(50),
 		startTime:        time.Now(),
 	}
 	h.startUsagePoller()
+
+	// Start file watcher for hot-reload of pool directory and config.
+	configPath := "config.toml"
+	if v := os.Getenv("CONFIG_PATH"); v != "" {
+		configPath = v
+	}
+	if watcher, err := newPoolWatcher(cfg.poolDir, configPath, h); err != nil {
+		log.Printf("warning: failed to start file watcher: %v (hot-reload disabled)", err)
+	} else {
+		defer watcher.close()
+	}
 
 	srv := &http.Server{
 		Addr:              cfg.listenAddr,
@@ -329,13 +365,17 @@ func main() {
 }
 
 type proxyHandler struct {
-	cfg              config
+	cfg              *config
 	transport        http.RoundTripper
 	refreshTransport http.RoundTripper // Separate transport for refresh ops (may use proxy)
 	pool             *poolState
 	poolUsers        *PoolUserStore
 	registry         *ProviderRegistry
 	store            *usageStore
+	analyticsStore   *AnalyticsStore
+	pricing          *PricingData
+	aliases          *modelAliases
+	bruteForce       *bruteForceTracker
 	metrics          *metrics
 	recent           *recentErrors
 	inflight         int64
@@ -352,9 +392,6 @@ type refreshCall struct {
 	done chan struct{}
 	err  error
 }
-
-// Note: ServeHTTP is now in router.go
-// Note: Handler functions (serveHealth, serveAccounts, etc.) are now in handlers.go
 
 func (h *proxyHandler) pickUpstream(path string, headers http.Header) (Provider, *url.URL) {
 	// Check headers first - Anthropic requests have X-Api-Key or anthropic-* headers
@@ -381,14 +418,10 @@ func (h *proxyHandler) pickUpstream(path string, headers http.Header) (Provider,
 }
 
 func mapResponsesPath(in string) string {
-	switch {
-	case strings.HasPrefix(in, "/v1/responses/compact"), strings.HasPrefix(in, "/responses/compact"):
+	if strings.HasPrefix(in, "/v1/responses/compact") || strings.HasPrefix(in, "/responses/compact") {
 		return "/responses/compact"
-	case strings.HasPrefix(in, "/v1/responses"), strings.HasPrefix(in, "/responses"):
-		return "/responses"
-	default:
-		return "/responses"
 	}
+	return "/responses"
 }
 
 func extractConversationIDFromHeaders(headers http.Header) string {
@@ -518,6 +551,22 @@ func (h *proxyHandler) modelRouteOverride(model string, body []byte) (Provider, 
 		rewritten := rewriteModelInBody(body, canonical)
 		return p, p.UpstreamURL(""), rewritten
 	}
+	// Cross-format model routing: detect if the model belongs to a different provider
+	// than the one the request path would normally select.
+	if isOpenAIModel(model) {
+		p := h.registry.ForType(AccountTypeCodex)
+		if p != nil {
+			return p, p.UpstreamURL(""), nil
+		}
+	}
+	if isClaudeModel(model) {
+		p := h.registry.ForType(AccountTypeClaude)
+		if p != nil {
+			canonical := claudeCanonicalModel(model)
+			rewritten := rewriteModelInBody(body, canonical)
+			return p, p.UpstreamURL(""), rewritten
+		}
+	}
 	return nil, nil, nil
 }
 
@@ -591,14 +640,12 @@ func (h *proxyHandler) proxyRequest(w http.ResponseWriter, r *http.Request, reqI
 
 	// Determine user ID - either from pool JWT, Claude pool token, or hashed IP
 	var userID string
-	var userType string // "pool_user" or "passthrough"
 	secret := getPoolJWTSecret()
 
 	// Check for Claude pool tokens first (sk-ant-oat01-pool-* or legacy sk-ant-api-pool-*)
 	if secret != "" {
 		if isClaudePool, uid := isClaudePoolToken(secret, authHeader); isClaudePool {
 			userID = uid
-			userType = "pool_user"
 			// Check if user is disabled
 			if h.poolUsers != nil {
 				if user := h.poolUsers.Get(userID); user != nil && user.Disabled {
@@ -606,7 +653,7 @@ func (h *proxyHandler) proxyRequest(w http.ResponseWriter, r *http.Request, reqI
 					return
 				}
 			}
-			if h.cfg.debug {
+			if h.cfg.debug.Load() {
 				log.Printf("[%s] claude pool user request: user_id=%s", reqID, userID)
 			}
 		}
@@ -623,15 +670,14 @@ func (h *proxyHandler) proxyRequest(w http.ResponseWriter, r *http.Request, reqI
 		if geminiAPIKey != "" {
 			if isPoolKey, uid, _ := isPoolGeminiAPIKey(secret, geminiAPIKey); isPoolKey {
 				userID = uid
-				userType = "pool_user"
-				// Check if user is disabled
+					// Check if user is disabled
 				if h.poolUsers != nil {
 					if user := h.poolUsers.Get(userID); user != nil && user.Disabled {
 						http.Error(w, "pool user disabled", http.StatusForbidden)
 						return
 					}
 				}
-				if h.cfg.debug {
+				if h.cfg.debug.Load() {
 					log.Printf("[%s] gemini api key pool user request: user_id=%s", reqID, userID)
 				}
 			}
@@ -642,7 +688,6 @@ func (h *proxyHandler) proxyRequest(w http.ResponseWriter, r *http.Request, reqI
 	if userID == "" && secret != "" {
 		if isPoolUser, uid, _ := isPoolUserToken(secret, authHeader); isPoolUser {
 			userID = uid
-			userType = "pool_user"
 			// Check if user is disabled
 			if h.poolUsers != nil {
 				if user := h.poolUsers.Get(userID); user != nil && user.Disabled {
@@ -650,7 +695,7 @@ func (h *proxyHandler) proxyRequest(w http.ResponseWriter, r *http.Request, reqI
 					return
 				}
 			}
-			if h.cfg.debug {
+			if h.cfg.debug.Load() {
 				log.Printf("[%s] pool user request: user_id=%s", reqID, userID)
 			}
 		}
@@ -661,7 +706,6 @@ func (h *proxyHandler) proxyRequest(w http.ResponseWriter, r *http.Request, reqI
 		token := strings.TrimPrefix(authHeader, "Bearer ")
 		if isPoolToken, uid := isGeminiOAuthPoolToken(secret, token); isPoolToken {
 			userID = uid
-			userType = "pool_user"
 			// Check if user is disabled
 			if h.poolUsers != nil {
 				if user := h.poolUsers.Get(userID); user != nil && user.Disabled {
@@ -669,7 +713,7 @@ func (h *proxyHandler) proxyRequest(w http.ResponseWriter, r *http.Request, reqI
 					return
 				}
 			}
-			if h.cfg.debug {
+			if h.cfg.debug.Load() {
 				log.Printf("[%s] gemini oauth pool user request: user_id=%s", reqID, userID)
 			}
 		}
@@ -679,7 +723,7 @@ func (h *proxyHandler) proxyRequest(w http.ResponseWriter, r *http.Request, reqI
 	// This allows users to use their own API keys while benefiting from the proxy infrastructure
 	if userID == "" {
 		if isProviderCred, providerType := looksLikeProviderCredential(authHeader); isProviderCred {
-			if h.cfg.debug {
+			if h.cfg.debug.Load() {
 				log.Printf("[%s] pass-through request with %s credential", reqID, providerType)
 			}
 			h.proxyPassthrough(w, r, reqID, providerType, start)
@@ -692,7 +736,6 @@ func (h *proxyHandler) proxyRequest(w http.ResponseWriter, r *http.Request, reqI
 		http.Error(w, "unauthorized: valid pool token required", http.StatusUnauthorized)
 		return
 	}
-	_ = userType
 
 	provider, targetBase := h.pickUpstream(r.URL.Path, r.Header)
 	if provider == nil || targetBase == nil {
@@ -708,7 +751,7 @@ func (h *proxyHandler) proxyRequest(w http.ResponseWriter, r *http.Request, reqI
 
 	streamBody := shouldStreamBody(r, h.cfg.maxInMemoryBodyBytes)
 	if streamBody {
-		if h.cfg.debug {
+		if h.cfg.debug.Load() {
 			log.Printf("[%s] streaming request body: method=%s path=%s provider=%s content-length=%d",
 				reqID, r.Method, r.URL.Path, accountType, r.ContentLength)
 		}
@@ -731,6 +774,24 @@ func (h *proxyHandler) proxyRequest(w http.ResponseWriter, r *http.Request, reqI
 	conversationID := extractConversationIDFromJSON(inspect)
 	requestedModel := extractRequestedModelFromJSON(inspect)
 
+	// Resolve model aliases before routing.
+	if requestedModel != "" {
+		requestedModel, bodyBytes = applyModelAlias(h.aliases, requestedModel, bodyBytes, h.cfg.debug.Load(), reqID)
+	}
+
+	// Parse thinking budget suffix before routing (e.g. "claude-sonnet-4-5(16384)").
+	// Strip suffix so routing sees the base model name.
+	if requestedModel != "" {
+		baseName, _, hasSuffix := parseThinkingSuffix(requestedModel)
+		if hasSuffix {
+			requestedModel = baseName
+			// Rewrite model in body to the base name for model routing to work.
+			if rewritten := rewriteModelInBody(bodyBytes, baseName); rewritten != nil {
+				bodyBytes = rewritten
+			}
+		}
+	}
+
 	// Model-based provider override: route to external providers by model name.
 	if requestedModel != "" {
 		if overrideProvider, overrideBase, rewrittenBody := h.modelRouteOverride(requestedModel, bodyBytes); overrideProvider != nil {
@@ -743,7 +804,104 @@ func (h *proxyHandler) proxyRequest(w http.ResponseWriter, r *http.Request, reqI
 		}
 	}
 
-	if h.cfg.debug && conversationID == "" && len(inspect) > 0 {
+	// Inject thinking budget if the original model had a (budget) suffix.
+	if requestedModel != "" {
+		origModel := extractRequestedModelFromJSON(inspect)
+		if origModel != "" {
+			_, budget, hasSuffix := parseThinkingSuffix(origModel)
+			if hasSuffix && budget > 0 {
+				bodyBytes = injectThinkingBudget(bodyBytes, accountType, budget)
+				if h.cfg.debug.Load() {
+					log.Printf("[%s] thinking suffix: budget=%d provider=%s", reqID, budget, accountType)
+				}
+			}
+		}
+	}
+
+	// --- Format translation: detect mismatch between client format and provider format ---
+	sourceFormat := detectRequestFormat(r.URL.Path)
+	targetFormat := providerTargetFormat(accountType)
+	translateDir := TranslateNone
+	if sourceFormat != FormatUnknown && targetFormat != FormatUnknown && sourceFormat != targetFormat {
+		if sourceFormat == FormatClaude && targetFormat == FormatOpenAI {
+			// Codex backend uses Responses API, not Chat Completions
+			if accountType == AccountTypeCodex {
+				translateDir = TranslateClaudeToResponses
+			} else {
+				translateDir = TranslateClaudeToOAI
+			}
+		} else if sourceFormat == FormatOpenAI && targetFormat == FormatClaude {
+			translateDir = TranslateOAIToClaude
+		}
+	}
+	// Special case: Chat Completions -> Codex Responses API
+	// When client sends /v1/chat/completions and provider is Codex, translate to Responses API format.
+	// The Codex upstream (chatgpt.com/backend-api/codex) only speaks Responses API.
+	// Codex always requires streaming, so we track whether the client originally wanted non-streaming.
+	clientWantsNonStreaming := false
+	if translateDir == TranslateNone && sourceFormat == FormatOpenAI && accountType == AccountTypeCodex {
+		translateDir = TranslateChatToResponses
+		// Check if client originally requested non-streaming
+		if len(inspect) > 0 {
+			var obj map[string]any
+			if json.Unmarshal(inspect, &obj) == nil {
+				if s, ok := obj["stream"].(bool); !ok || !s {
+					clientWantsNonStreaming = true
+				}
+			}
+		}
+	}
+	// Special case: Responses API -> Claude Messages API
+	// When client sends /responses (e.g. Codex CLI with -m opus) and provider is Claude.
+	if translateDir == TranslateNone && accountType == AccountTypeClaude {
+		if strings.HasPrefix(r.URL.Path, "/v1/responses") || strings.HasPrefix(r.URL.Path, "/responses") {
+			translateDir = TranslateResponsesToClaude
+		}
+	}
+
+	if translateDir != TranslateNone {
+		logTranslation(reqID, translateDir, h.cfg.debug.Load())
+		var err error
+		switch translateDir {
+		case TranslateClaudeToOAI:
+			bodyBytes, err = translateRequestBody(bodyBytes, sourceFormat, targetFormat)
+			if err != nil {
+				http.Error(w, "format translation error: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			r.URL.Path = "/v1/chat/completions"
+		case TranslateOAIToClaude:
+			bodyBytes, err = translateRequestBody(bodyBytes, sourceFormat, targetFormat)
+			if err != nil {
+				http.Error(w, "format translation error: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			r.URL.Path = "/v1/messages"
+		case TranslateChatToResponses:
+			bodyBytes, err = translateChatCompletionsToResponses(bodyBytes)
+			if err != nil {
+				http.Error(w, "format translation error: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			r.URL.Path = "/v1/responses"
+		case TranslateResponsesToClaude:
+			bodyBytes, err = translateResponsesToClaudeRequest(bodyBytes)
+			if err != nil {
+				http.Error(w, "format translation error: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			r.URL.Path = "/v1/messages"
+		case TranslateClaudeToResponses:
+			bodyBytes, err = translateClaudeToResponsesRequest(bodyBytes)
+			if err != nil {
+				http.Error(w, "format translation error: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			r.URL.Path = "/v1/responses"
+		}
+	}
+
+	if h.cfg.debug.Load() && conversationID == "" && len(inspect) > 0 {
 		// Help debug why conversation id isn't being extracted without dumping the full body.
 		var obj map[string]any
 		if err := json.Unmarshal(inspect, &obj); err == nil {
@@ -759,7 +917,7 @@ func (h *proxyHandler) proxyRequest(w http.ResponseWriter, r *http.Request, reqI
 		}
 	}
 
-	if h.cfg.debug {
+	if h.cfg.debug.Load() {
 		log.Printf("[%s] incoming %s %s provider=%s conv_id=%s authZ_len=%d chatgpt-id=%q content-type=%q content-encoding=%q body_bytes=%d",
 			reqID,
 			r.Method,
@@ -814,9 +972,29 @@ func (h *proxyHandler) proxyRequest(w http.ResponseWriter, r *http.Request, reqI
 		requiredPlan = "pro"
 	}
 
+	const maxCooldownWait = 10 * time.Second // max time to wait for a rate-limited account
+
 	for attempt := 1; attempt <= attempts; attempt++ {
 		acc := h.pool.candidate(conversationID, exclude, accountType, requiredPlan)
 		if acc == nil {
+			// All accounts excluded or rate-limited. If there are rate-limited
+			// accounts, wait for the shortest cooldown instead of 503 immediately.
+			if cooldown := h.pool.nearestCooldown(accountType, nil); cooldown > 0 {
+				wait := cooldown
+				if wait > maxCooldownWait {
+					wait = maxCooldownWait
+				}
+				if h.cfg.debug.Load() {
+					log.Printf("[%s] all %s accounts exhausted, waiting %s for cooldown", reqID, accountType, wait)
+				}
+				select {
+				case <-time.After(wait):
+					// Retry with fresh exclude set.
+					exclude = map[string]bool{}
+					continue
+				case <-ctx.Done():
+				}
+			}
 			if lastErr != nil {
 				http.Error(w, lastErr.Error(), http.StatusServiceUnavailable)
 			} else {
@@ -833,101 +1011,129 @@ func (h *proxyHandler) proxyRequest(w http.ResponseWriter, r *http.Request, reqI
 		atomic.AddInt64(&acc.Inflight, 1)
 		atomic.AddInt64(&h.inflight, 1)
 
-		resp, sampleBuf, refreshFailed, err := h.tryOnce(ctx, r, bodyBytes, targetBase, provider, acc, reqID)
+		resp, sampleBuf, refreshFailed, err := h.tryOnce(ctx, r, bodyBytes, targetBase, provider, acc, reqID, translateDir)
 
 		atomic.AddInt64(&acc.Inflight, -1)
 		atomic.AddInt64(&h.inflight, -1)
 
 		if err != nil {
 			lastErr = err
+			// Don't retry if client already disconnected — context is dead,
+			// every subsequent tryOnce will also fail instantly.
+			if ctx.Err() != nil {
+				log.Printf("[%s] account %s: request ended after %dms due to context error: %v", reqID, acc.ID, time.Since(start).Milliseconds(), ctx.Err())
+				break
+			}
 			h.recent.add(err.Error())
-			if h.cfg.debug {
+			if h.cfg.debug.Load() {
 				log.Printf("[%s] attempt %d/%d account=%s failed: %v", reqID, attempt, attempts, acc.ID, err)
 			}
 			continue
 		}
 		lastStatus = resp.StatusCode
 
-		if resp.StatusCode == http.StatusTooManyRequests {
-			h.applyRateLimit(acc, resp.Header, defaultRateLimitBackoff)
-			acc.mu.Lock()
-			acc.Penalty += 1.0
-			acc.mu.Unlock()
-		}
+		// --- Error classification & handling ---
+		errClass := classifyStatus(resp.StatusCode)
 
-		// Handle 402 Payment Required - often means deactivated workspace/subscription
-		if resp.StatusCode == http.StatusPaymentRequired {
-			errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-			resp.Body.Close()
-			errBody = bodyForInspection(nil, errBody)
-			errStr := string(errBody)
-			// Check for deactivated_workspace or similar permanent failures
-			if strings.Contains(errStr, "deactivated_workspace") || strings.Contains(errStr, "subscription") {
-				acc.mu.Lock()
-				acc.Dead = true
-				acc.Penalty += 100.0
-				acc.mu.Unlock()
-				log.Printf("[%s] marking account %s as DEAD: %s", reqID, acc.ID, errStr)
-				if err := saveAccount(acc); err != nil {
-					log.Printf("[%s] warning: failed to save dead account %s: %v", reqID, acc.ID, err)
-				}
-				lastErr = fmt.Errorf("account deactivated: %s", errStr)
-				h.recent.add(lastErr.Error())
-				continue
-			}
-		}
-
-		if isRetryableStatus(resp.StatusCode) {
-			// Read error body FIRST before any other processing
+		// For classes that need the body, read it now.
+		if errClass != ErrorClassNone {
 			errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 			resp.Body.Close()
 			errBody = bodyForInspection(nil, errBody)
 			errBodyStr := string(errBody)
 
-			// Mark account health and try another one.
-			if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+			// Refine classification with body content.
+			if errClass == ErrorClassPayment && isDeactivatedWorkspace(errBody) {
 				acc.mu.Lock()
-				// Codex accounts: only mark dead from usage endpoint failures, not proxy failures
-				// Other accounts: mark dead if refresh failed
+				acc.Dead = true
+				acc.Penalty += 100.0
+				acc.mu.Unlock()
+				log.Printf("[%s] marking account %s as DEAD: %s", reqID, acc.ID, errBodyStr)
+				if err := saveAccount(acc); err != nil {
+					log.Printf("[%s] warning: failed to save dead account %s: %v", reqID, acc.ID, err)
+				}
+				lastErr = fmt.Errorf("account deactivated: %s", errBodyStr)
+				h.recent.add(lastErr.Error())
+				continue
+			}
+
+			switch errClass {
+			case ErrorClassRateLimit:
+				h.applyRateLimit(acc, resp.Header)
+				acc.mu.Lock()
+				acc.Penalty += 0.2
+				acc.mu.Unlock()
+
+			case ErrorClassAuth:
+				acc.mu.Lock()
+				// Codex accounts: only mark dead from usage endpoint failures, not proxy failures.
+				// Other accounts: mark dead if refresh already failed.
 				if refreshFailed && acc.Type != AccountTypeCodex {
 					acc.Dead = true
 					acc.Penalty += 1.0
 					acc.mu.Unlock()
-					log.Printf("[%s] account %s DEAD: 401/403 refresh failed, body=%s", reqID, acc.ID, errBodyStr)
+					log.Printf("[%s] account %s DEAD: %d refresh failed, body=%s", reqID, acc.ID, resp.StatusCode, errBodyStr)
 					if err := saveAccount(acc); err != nil {
 						log.Printf("[%s] warning: failed to save dead account %s: %v", reqID, acc.ID, err)
 					}
 				} else {
-					// Codex: never mark dead from proxy, only from usage tracking
-					// Others: refresh was rate-limited or not needed
-					// Add heavy penalty so this account drops below working ones
 					acc.Penalty += 10.0
 					acc.mu.Unlock()
-					// Always log 401/403 with error body and response headers for debugging
 					var respHdrs []string
 					for k, v := range resp.Header {
 						respHdrs = append(respHdrs, fmt.Sprintf("%s=%s", k, v[0]))
 					}
 					log.Printf("[%s] account %s got %d, penalty now %.0f, body=%s, resp_headers=%v", reqID, acc.ID, resp.StatusCode, acc.Penalty, errBodyStr, respHdrs)
 				}
-			} else {
+
+			case ErrorClassPayment:
+				// Non-deactivated payment error — heavy penalty but not dead.
+				acc.mu.Lock()
+				acc.Penalty += 50.0
+				acc.mu.Unlock()
+
+			case ErrorClassTransient:
 				acc.mu.Lock()
 				acc.Penalty += 0.3
 				acc.mu.Unlock()
+
+			case ErrorClassNotFound:
+				acc.mu.Lock()
+				acc.Penalty += 0.1
+				acc.mu.Unlock()
 			}
-			if len(errBody) > 0 {
-				lastErr = fmt.Errorf("upstream %s: %s", resp.Status, errBodyStr)
+
+			if errClass.Retryable() {
+				if len(errBody) > 0 {
+					lastErr = fmt.Errorf("upstream %s: %s", resp.Status, errBodyStr)
+				} else {
+					lastErr = fmt.Errorf("upstream %s", resp.Status)
+				}
+				h.recent.add(lastErr.Error())
+				if h.cfg.debug.Load() {
+					log.Printf("[%s] attempt %d/%d account=%s status=%d class=%s refreshFailed=%v",
+						reqID, attempt, attempts, acc.ID, resp.StatusCode, errClass, refreshFailed)
+				}
+				continue
+			}
+
+			// Non-retryable error (400, unknown) — return to client.
+			// Translate error body if format translation is active.
+			if translateDir != TranslateNone {
+				translated := translateErrorBody(errBody, targetFormat, sourceFormat)
+				resp.Body = io.NopCloser(bytes.NewReader(translated))
 			} else {
-				lastErr = fmt.Errorf("upstream %s", resp.Status)
+				resp.Body = io.NopCloser(strings.NewReader(errBodyStr))
 			}
-			h.recent.add(lastErr.Error())
-			if h.cfg.debug {
-				log.Printf("[%s] attempt %d/%d account=%s retryable status=%d refreshFailed=%v", reqID, attempt, attempts, acc.ID, resp.StatusCode, refreshFailed)
-			}
-			continue
 		}
 
+		// Success path — reset exponential backoff.
+		acc.mu.Lock()
+		acc.BackoffLevel = 0
+		acc.mu.Unlock()
+
 		provider.ParseUsageHeaders(acc, resp.Header)
+		h.logRateLimitResponseHeaders(reqID, acc.Type, resp.Header)
 
 		// Snapshot rate limits from headers for use in SSE callback
 		// (Claude SSE events carry 0% — real data comes from headers)
@@ -936,143 +1142,335 @@ func (h *proxyHandler) proxyRequest(w http.ResponseWriter, r *http.Request, reqI
 		headerSecondaryPct := acc.Usage.SecondaryUsedPercent
 		acc.mu.Unlock()
 
-		// Write response to client.
+		// Prepare response headers.
 		copyHeader(w.Header(), resp.Header)
 		removeHopByHopHeaders(w.Header())
-		// Replace individual account usage headers with pool aggregate usage
 		h.replaceUsageHeaders(w.Header())
-		w.WriteHeader(resp.StatusCode)
 
-		flusher, _ := w.(http.Flusher)
-		respContentType := resp.Header.Get("Content-Type")
-		// Use provider's SSE detection logic
-		isSSE := provider.DetectsSSE(r.URL.Path, respContentType)
-		if h.cfg.debug {
-			log.Printf("[%s] response: isSSE=%v content-type=%s", reqID, isSSE, respContentType)
-		}
-
-		// Stream body while optionally flushing.
-		var writer io.Writer = w
-		var fw *flushWriter
-		if isSSE && flusher != nil {
-			fw = &flushWriter{w: w, f: flusher, flushInterval: h.cfg.flushInterval}
-			writer = fw
-		}
-
-		// For SSE streams, intercept usage events inline as they flow through
-		if isSSE {
-			// Claude sends usage across two SSE events (message_start: input, message_delta: output).
-			// Accumulate them into a single RequestUsage before recording.
-			var claudeAccum *RequestUsage
-			writer = &sseInterceptWriter{
-				w: writer,
-				callback: func(data []byte) {
-					// Parse the JSON event data - try object first, then array
-					var obj map[string]any
-					if err := json.Unmarshal(data, &obj); err != nil {
-						// Try parsing as array (Gemini sends [{"candidates":..., "usageMetadata":...}])
-						var arr []map[string]any
-						if err2 := json.Unmarshal(data, &arr); err2 != nil || len(arr) == 0 {
-							if h.cfg.debug {
-								log.Printf("[%s] SSE callback: failed to parse JSON: %v", reqID, err)
-							}
-							return
-						}
-						obj = arr[0] // Use first element
-					}
-					// Use provider's ParseUsage method
-					ru := provider.ParseUsage(obj)
-					if ru == nil {
-						return
-					}
-
-					// For Claude, accumulate input (message_start) and output (message_delta)
-					// into a single record before emitting.
-					if acc.Type == AccountTypeClaude {
-						if claudeAccum == nil {
-							// First event (message_start): has input tokens
-							claudeAccum = ru
-						} else {
-							// Second event (message_delta): has output tokens — merge and emit
-							claudeAccum.OutputTokens = ru.OutputTokens
-							claudeAccum.BillableTokens = clampNonNegative(
-								claudeAccum.InputTokens - claudeAccum.CachedInputTokens + ru.OutputTokens)
-							ru = claudeAccum
-							claudeAccum = nil
-							ru.AccountID = acc.ID
-							ru.UserID = userID
-							ru.AccountType = acc.Type
-							acc.mu.Lock()
-							ru.PlanType = acc.PlanType
-							acc.mu.Unlock()
-							// Bridge rate limits from response headers into the usage record
-							if ru.PrimaryUsedPct == 0 && headerPrimaryPct > 0 {
-								ru.PrimaryUsedPct = headerPrimaryPct
-							}
-							if ru.SecondaryUsedPct == 0 && headerSecondaryPct > 0 {
-								ru.SecondaryUsedPct = headerSecondaryPct
-							}
-							h.recordUsage(acc, *ru)
-						}
-						return
-					}
-					// Non-Claude: record immediately (existing behavior)
-					ru.AccountID = acc.ID
-					ru.UserID = userID
-					ru.AccountType = acc.Type
-					acc.mu.Lock()
-					ru.PlanType = acc.PlanType
-					acc.mu.Unlock()
-					h.recordUsage(acc, *ru)
-				},
-			}
-		}
-
-		// Wrap response body with idle timeout to kill zombie SSE connections.
-		var idleReader *idleTimeoutReader
-		if isSSE && h.cfg.streamIdleTimeout > 0 {
-			idleReader = newIdleTimeoutReader(resp.Body, h.cfg.streamIdleTimeout, cancel)
-			resp.Body = idleReader
-		}
-
-		_, copyErr := io.Copy(writer, resp.Body)
-		resp.Body.Close()
-		if fw != nil {
-			fw.stop()
-		}
-
-		if copyErr != nil {
-			h.recent.add(copyErr.Error())
-			h.metrics.inc("error", acc.ID)
-			if idleReader != nil {
-				log.Printf("[%s] SSE stream error (account=%s): %v", reqID, acc.ID, copyErr)
+		// Inject Claude models into model catalog response
+		if strings.Contains(r.URL.Path, "codex/models") && resp.StatusCode == 200 {
+			w.Header().Del("Content-Length")
+			w.Header().Del("Content-Encoding") // We'll return uncompressed JSON
+			respBody, readErr := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if readErr == nil {
+				modified := injectClaudeModels(respBody)
+				w.WriteHeader(resp.StatusCode)
+				w.Write(modified)
+			} else {
+				w.WriteHeader(http.StatusBadGateway)
 			}
 			return
 		}
 
-		respSample := []byte(nil)
-		if sampleBuf != nil {
-			respSample = sampleBuf.Bytes()
+		flusher, _ := w.(http.Flusher)
+		respContentType := resp.Header.Get("Content-Type")
+		isSSE := provider.DetectsSSE(r.URL.Path, respContentType)
+		// When translating to Responses API, the path-based SSE detection may
+		// incorrectly flag non-SSE error responses (plain JSON 4xx/5xx) as SSE.
+		// Check the actual content-type on error responses to avoid feeding
+		// plain JSON through the SSE translator (which would silently drop it).
+		if isSSE && resp.StatusCode >= 400 &&
+			(translateDir == TranslateClaudeToResponses || translateDir == TranslateChatToResponses) {
+			if !strings.Contains(strings.ToLower(respContentType), "text/event-stream") {
+				isSSE = false
+			}
 		}
-		if h.cfg.logBodies && len(respSample) > 0 {
-			log.Printf("[%s] response body sample (%d bytes): %s", reqID, len(respSample), safeText(respSample))
+		if h.cfg.debug.Load() {
+			log.Printf("[%s] response: isSSE=%v content-type=%s translateDir=%d status=%d", reqID, isSSE, respContentType, translateDir, resp.StatusCode)
 		}
-		// Still try to parse sample for non-SSE responses or fallback
-		if !isSSE && len(respSample) > 0 {
-			h.updateUsageFromBody(acc, respSample)
+
+		// Client wanted non-streaming but Codex requires streaming:
+		// buffer SSE events and assemble a non-streaming Chat Completions response.
+		if clientWantsNonStreaming && isSSE && translateDir == TranslateChatToResponses {
+			w.Header().Del("Content-Length")
+			w.Header().Set("Content-Type", "application/json")
+
+			usageCallback := func(data []byte) {
+				if sampleBuf != nil {
+					sampleBuf.Write(data)
+				}
+				var obj map[string]any
+				if json.Unmarshal(data, &obj) == nil {
+					if ru := provider.ParseUsage(obj); ru != nil {
+						if ru.PrimaryUsedPct == 0 && headerPrimaryPct > 0 {
+							ru.PrimaryUsedPct = headerPrimaryPct
+						}
+						if ru.SecondaryUsedPct == 0 && headerSecondaryPct > 0 {
+							ru.SecondaryUsedPct = headerSecondaryPct
+						}
+						h.recordUsage(acc, *ru)
+					}
+				}
+			}
+
+			bufWriter := &responsesToChatCompletionsBufferingWriter{
+				callback: usageCallback,
+				debug:    h.cfg.debug.Load(),
+				reqID:    reqID,
+			}
+
+			if _, err := io.Copy(bufWriter, resp.Body); err != nil {
+				if h.cfg.debug.Load() {
+					log.Printf("[%s] buffering SSE error: %v", reqID, err)
+				}
+			}
+			resp.Body.Close()
+
+			result := bufWriter.Result()
+			w.WriteHeader(resp.StatusCode)
+			w.Write(result)
+		} else if !isSSE && translateDir != TranslateNone {
+		// Non-SSE format translation: buffer the whole body, translate, write.
+			w.Header().Del("Content-Length")
+			w.Header().Set("Content-Type", "application/json")
+
+			respBody, readErr := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if readErr != nil {
+				h.recent.add(readErr.Error())
+				h.metrics.inc("error", acc.ID)
+				return
+			}
+			// Let the existing usage/sample logic see the raw body
+			if sampleBuf != nil {
+				sampleBuf.Write(respBody)
+			}
+			h.updateUsageFromBody(acc, respBody)
+
+			var translated []byte
+			if resp.StatusCode >= 400 {
+				// Error response - translate error format
+				if translateDir == TranslateClaudeToResponses {
+					// Translate Codex error to Claude error format
+					translated = translateErrorToClaudeFormat(respBody, resp.StatusCode)
+				} else if translateDir == TranslateChatToResponses || translateDir == TranslateResponsesToClaude {
+					translated = respBody // Pass through error as-is
+				} else {
+					translated = translateErrorBody(respBody, targetFormat, sourceFormat)
+				}
+			} else if translateDir == TranslateResponsesToClaude {
+				var trErr error
+				translated, trErr = translateClaudeRespToResponses(respBody)
+				if trErr != nil {
+					if h.cfg.debug.Load() {
+						log.Printf("[%s] claude->responses translation error: %v", reqID, trErr)
+					}
+					translated = respBody
+				}
+			} else if translateDir == TranslateChatToResponses {
+				var trErr error
+				translated, trErr = translateResponsesToChatCompletions(respBody)
+				if trErr != nil {
+					if h.cfg.debug.Load() {
+						log.Printf("[%s] responses->chat translation error: %v", reqID, trErr)
+					}
+					translated = respBody
+				}
+			} else {
+				var trErr error
+				translated, trErr = translateResponseBody(respBody, targetFormat, sourceFormat, requestedModel)
+				if trErr != nil {
+					if h.cfg.debug.Load() {
+						log.Printf("[%s] response translation error: %v", reqID, trErr)
+					}
+					translated = respBody
+				}
+			}
+			w.WriteHeader(resp.StatusCode)
+			w.Write(translated)
+		} else {
+			// Normal response path (streaming or no translation needed)
+			if isSSE && translateDir != TranslateNone {
+				w.Header().Del("Content-Length")
+				w.Header().Set("Content-Type", "text/event-stream")
+			}
+			w.WriteHeader(resp.StatusCode)
+
+			var writer io.Writer = w
+			var fw *flushWriter
+			var hw *heartbeatWriter
+			if isSSE && flusher != nil {
+				fw = &flushWriter{w: w, f: flusher, flushInterval: h.cfg.flushInterval}
+				hw = newHeartbeatWriter(fw, flusher)
+				writer = hw
+			}
+
+			var claudeAccum *RequestUsage
+
+			usageCallback := func(data []byte) {
+				var obj map[string]any
+				if err := json.Unmarshal(data, &obj); err != nil {
+					var arr []map[string]any
+					if err2 := json.Unmarshal(data, &arr); err2 != nil || len(arr) == 0 {
+						if h.cfg.debug.Load() {
+							log.Printf("[%s] SSE callback: failed to parse JSON: %v", reqID, err)
+						}
+						return
+					}
+					obj = arr[0]
+				}
+				ru := provider.ParseUsage(obj)
+				if ru == nil {
+					return
+				}
+
+				if acc.Type == AccountTypeClaude {
+					if claudeAccum == nil {
+						claudeAccum = ru
+					} else {
+						claudeAccum.OutputTokens = ru.OutputTokens
+						claudeAccum.BillableTokens = clampNonNegative(
+							claudeAccum.InputTokens - claudeAccum.CachedInputTokens + ru.OutputTokens)
+						ru = claudeAccum
+						claudeAccum = nil
+						ru.AccountID = acc.ID
+						ru.UserID = userID
+						ru.AccountType = acc.Type
+						acc.mu.Lock()
+						ru.PlanType = acc.PlanType
+						acc.mu.Unlock()
+						if ru.PrimaryUsedPct == 0 && headerPrimaryPct > 0 {
+							ru.PrimaryUsedPct = headerPrimaryPct
+						}
+						if ru.SecondaryUsedPct == 0 && headerSecondaryPct > 0 {
+							ru.SecondaryUsedPct = headerSecondaryPct
+						}
+						if ru.Model == "" {
+							ru.Model = requestedModel
+						}
+						h.recordUsage(acc, *ru)
+					}
+					return
+				}
+				ru.AccountID = acc.ID
+				ru.UserID = userID
+				ru.AccountType = acc.Type
+				acc.mu.Lock()
+				ru.PlanType = acc.PlanType
+				acc.mu.Unlock()
+				if ru.Model == "" {
+					ru.Model = requestedModel
+				}
+				h.recordUsage(acc, *ru)
+			}
+
+			if isSSE {
+				if translateDir == TranslateChatToResponses {
+					writer = &responsesToChatCompletionsWriter{
+						w:        writer,
+						callback: usageCallback,
+						debug:    h.cfg.debug.Load(),
+						reqID:    reqID,
+					}
+				} else if translateDir == TranslateResponsesToClaude {
+					// Claude SSE response → Responses API SSE
+					writer = &claudeToResponsesWriter{
+						w:        writer,
+						callback: usageCallback,
+						debug:    h.cfg.debug.Load(),
+						reqID:    reqID,
+					}
+				} else if translateDir == TranslateClaudeToResponses {
+					// Responses API SSE → Claude SSE
+					writer = &responsesToClaudeWriter{
+						w:        writer,
+						callback: usageCallback,
+						debug:    h.cfg.debug.Load(),
+						reqID:    reqID,
+					}
+				} else if translateDir != TranslateNone {
+					// Response direction is opposite of request direction:
+					// TranslateOAIToClaude request → response comes in Claude format → translate to OAI
+					// TranslateClaudeToOAI request → response comes in OAI format → translate to Claude
+					responseDir := TranslateClaudeToOAI
+					if translateDir == TranslateClaudeToOAI {
+						responseDir = TranslateOAIToClaude
+					}
+					writer = &sseTranslateWriter{
+						w:         writer,
+						direction: responseDir,
+						callback:  usageCallback,
+						debug:     h.cfg.debug.Load(),
+						reqID:     reqID,
+					}
+				} else {
+					writer = &sseInterceptWriter{
+						w:        writer,
+						callback: usageCallback,
+					}
+				}
+			}
+
+			var idleReader *idleTimeoutReader
+			if isSSE && h.cfg.streamIdleTimeout > 0 {
+				idleReader = newIdleTimeoutReader(resp.Body, h.cfg.streamIdleTimeout, cancel)
+				resp.Body = idleReader
+			}
+
+			_, copyErr := io.Copy(writer, resp.Body)
+			resp.Body.Close()
+			if hw != nil {
+				hw.Stop()
+			}
+			if fw != nil {
+				fw.stop()
+			}
+
+			if claudeAccum != nil {
+				claudeAccum.AccountID = acc.ID
+				claudeAccum.UserID = userID
+				claudeAccum.AccountType = acc.Type
+				acc.mu.Lock()
+				claudeAccum.PlanType = acc.PlanType
+				acc.mu.Unlock()
+				if claudeAccum.PrimaryUsedPct == 0 && headerPrimaryPct > 0 {
+					claudeAccum.PrimaryUsedPct = headerPrimaryPct
+				}
+				if claudeAccum.SecondaryUsedPct == 0 && headerSecondaryPct > 0 {
+					claudeAccum.SecondaryUsedPct = headerSecondaryPct
+				}
+				if claudeAccum.Model == "" {
+					claudeAccum.Model = requestedModel
+				}
+				h.recordUsage(acc, *claudeAccum)
+			}
+
+			if copyErr != nil {
+				if ctx.Err() == nil {
+					// Only record as error if client didn't disconnect.
+					h.recent.add(copyErr.Error())
+					h.metrics.inc("error", acc.ID)
+				}
+				if idleReader != nil {
+					log.Printf("[%s] SSE stream error (account=%s): %v", reqID, acc.ID, copyErr)
+				}
+				return
+			}
+
+			respSample := []byte(nil)
+			if sampleBuf != nil {
+				respSample = sampleBuf.Bytes()
+			}
+			if h.cfg.logBodies && len(respSample) > 0 {
+				log.Printf("[%s] response body sample (%d bytes): %s", reqID, len(respSample), safeText(respSample))
+			}
+			if !isSSE && len(respSample) > 0 {
+				h.updateUsageFromBody(acc, respSample)
+			}
 		}
 
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			// Success: pin conversation if possible (if request didn't include it, try to learn from response).
-			if conversationID == "" && len(respSample) > 0 {
-				conversationID = extractConversationIDFromSSE(respSample)
+			if conversationID == "" {
+				if sampleBuf != nil && sampleBuf.Len() > 0 {
+					conversationID = extractConversationIDFromSSE(sampleBuf.Bytes())
+				}
 			}
 			if conversationID != "" {
 				h.pool.pin(conversationID, acc.ID)
 			}
 			acc.mu.Lock()
 			acc.LastUsed = time.Now()
-			// Successful request - decay penalty faster (proves account works)
 			if acc.Penalty > 0 {
 				acc.Penalty *= 0.5
 				if acc.Penalty < 0.01 {
@@ -1084,13 +1482,17 @@ func (h *proxyHandler) proxyRequest(w http.ResponseWriter, r *http.Request, reqI
 
 		h.metrics.inc(strconv.Itoa(resp.StatusCode), acc.ID)
 
-		if h.cfg.debug {
+		if h.cfg.debug.Load() {
 			log.Printf("[%s] done status=%d account=%s duration_ms=%d", reqID, resp.StatusCode, acc.ID, time.Since(start).Milliseconds())
 		}
 		return
 	}
 
 	// All attempts failed.
+	if ctx.Err() != nil {
+		// Client disconnected — no point sending an error response.
+		return
+	}
 	status := http.StatusBadGateway
 	if lastStatus == http.StatusTooManyRequests {
 		status = http.StatusTooManyRequests
@@ -1134,11 +1536,11 @@ func (h *proxyHandler) proxyRequestWebSocket(
 	if !h.cfg.disableRefresh && h.needsRefresh(acc) {
 		if err := h.refreshAccount(r.Context(), acc); err != nil {
 			if isRateLimitError(err) {
-				h.applyRateLimit(acc, nil, defaultRateLimitBackoff)
+				h.applyRateLimit(acc, nil)
 			} else {
 				refreshFailed = true
 			}
-			if h.cfg.debug {
+			if h.cfg.debug.Load() {
 				log.Printf("[%s] refresh %s failed before websocket request: %v", reqID, acc.ID, err)
 			}
 		}
@@ -1193,7 +1595,7 @@ func (h *proxyHandler) proxyRequestWebSocket(
 			provider.ParseUsageHeaders(acc, resp.Header)
 
 			if resp.StatusCode == http.StatusTooManyRequests {
-				h.applyRateLimit(acc, resp.Header, defaultRateLimitBackoff)
+				h.applyRateLimit(acc, resp.Header)
 				acc.mu.Lock()
 				acc.Penalty += 1.0
 				acc.mu.Unlock()
@@ -1226,6 +1628,7 @@ func (h *proxyHandler) proxyRequestWebSocket(
 				}
 				acc.mu.Lock()
 				acc.LastUsed = time.Now()
+				acc.BackoffLevel = 0
 				if acc.Penalty > 0 {
 					acc.Penalty *= 0.5
 					if acc.Penalty < 0.01 {
@@ -1239,14 +1642,14 @@ func (h *proxyHandler) proxyRequestWebSocket(
 		},
 		ErrorHandler: func(rw http.ResponseWriter, req *http.Request, err error) {
 			proxyErr = err
-			if h.cfg.debug {
+			if h.cfg.debug.Load() {
 				log.Printf("[%s] websocket proxy error (account=%s): %v", reqID, acc.ID, err)
 			}
 			http.Error(rw, err.Error(), http.StatusBadGateway)
 		},
 	}
 
-	if h.cfg.debug {
+	if h.cfg.debug.Load() {
 		log.Printf("[%s] websocket -> %s %s (account=%s)", reqID, r.Method, outURL.String(), acc.ID)
 	}
 
@@ -1260,7 +1663,7 @@ func (h *proxyHandler) proxyRequestWebSocket(
 	if statusCode != 0 {
 		h.metrics.inc(strconv.Itoa(statusCode), acc.ID)
 	}
-	if h.cfg.debug {
+	if h.cfg.debug.Load() {
 		log.Printf("[%s] websocket done status=%d account=%s user=%s duration_ms=%d", reqID, statusCode, acc.ID, userID, time.Since(start).Milliseconds())
 	}
 }
@@ -1318,14 +1721,14 @@ func (h *proxyHandler) proxyPassthroughWebSocket(
 		},
 		ErrorHandler: func(rw http.ResponseWriter, req *http.Request, err error) {
 			proxyErr = err
-			if h.cfg.debug {
+			if h.cfg.debug.Load() {
 				log.Printf("[%s] passthrough websocket proxy error: %v", reqID, err)
 			}
 			http.Error(rw, err.Error(), http.StatusBadGateway)
 		},
 	}
 
-	if h.cfg.debug {
+	if h.cfg.debug.Load() {
 		log.Printf("[%s] passthrough websocket -> %s %s", reqID, r.Method, outURL.String())
 	}
 
@@ -1339,7 +1742,7 @@ func (h *proxyHandler) proxyPassthroughWebSocket(
 	if statusCode != 0 {
 		h.metrics.inc(strconv.Itoa(statusCode), "passthrough")
 	}
-	if h.cfg.debug {
+	if h.cfg.debug.Load() {
 		log.Printf("[%s] passthrough websocket done status=%d duration_ms=%d", reqID, statusCode, time.Since(start).Milliseconds())
 	}
 }
@@ -1379,11 +1782,11 @@ func (h *proxyHandler) proxyRequestStreamed(w http.ResponseWriter, r *http.Reque
 	if !h.cfg.disableRefresh && h.needsRefresh(acc) {
 		if err := h.refreshAccount(ctx, acc); err != nil {
 			if isRateLimitError(err) {
-				h.applyRateLimit(acc, nil, defaultRateLimitBackoff)
+				h.applyRateLimit(acc, nil)
 			} else {
 				refreshFailed = true
 			}
-			if h.cfg.debug {
+			if h.cfg.debug.Load() {
 				log.Printf("[%s] refresh %s failed before streamed request: %v", reqID, acc.ID, err)
 			}
 		}
@@ -1449,7 +1852,7 @@ func (h *proxyHandler) proxyRequestStreamed(w http.ResponseWriter, r *http.Reque
 	// Use provider's SetAuthHeaders method for provider-specific auth
 	provider.SetAuthHeaders(outReq, acc)
 
-	if h.cfg.debug {
+	if h.cfg.debug.Load() {
 		authHeader := outReq.Header.Get("Authorization")
 		authLen := len(authHeader)
 		authPreview := ""
@@ -1477,9 +1880,9 @@ func (h *proxyHandler) proxyRequestStreamed(w http.ResponseWriter, r *http.Reque
 	}
 
 	if resp.StatusCode == http.StatusTooManyRequests {
-		h.applyRateLimit(acc, resp.Header, defaultRateLimitBackoff)
+		h.applyRateLimit(acc, resp.Header)
 		acc.mu.Lock()
-		acc.Penalty += 1.0
+		acc.Penalty += 0.2
 		acc.mu.Unlock()
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
@@ -1509,6 +1912,7 @@ func (h *proxyHandler) proxyRequestStreamed(w http.ResponseWriter, r *http.Reque
 	}
 
 	provider.ParseUsageHeaders(acc, resp.Header)
+	h.logRateLimitResponseHeaders(reqID, acc.Type, resp.Header)
 
 	// Snapshot rate limits from headers for use in SSE callback
 	acc.mu.Lock()
@@ -1528,9 +1932,11 @@ func (h *proxyHandler) proxyRequestStreamed(w http.ResponseWriter, r *http.Reque
 
 	var writer io.Writer = w
 	var fw *flushWriter
+	var hw2 *heartbeatWriter
 	if isSSE && flusher != nil {
 		fw = &flushWriter{w: w, f: flusher, flushInterval: h.cfg.flushInterval}
-		writer = fw
+		hw2 = newHeartbeatWriter(fw, flusher)
+		writer = hw2
 	}
 
 	// Tee a bounded sample for usage extraction and conversation pinning.
@@ -1547,10 +1953,12 @@ func (h *proxyHandler) proxyRequestStreamed(w http.ResponseWriter, r *http.Reque
 		Closer: resp.Body,
 	}
 
+	// Claude sends usage across two SSE events (message_start: input, message_delta: output).
+	// Accumulate them into a single RequestUsage before recording.
+	// Declared outside the if-block so it can be flushed after io.Copy completes.
+	var claudeAccum2 *RequestUsage
+
 	if isSSE {
-		// Claude sends usage across two SSE events (message_start: input, message_delta: output).
-		// Accumulate them into a single RequestUsage before recording.
-		var claudeAccum *RequestUsage
 		writer = &sseInterceptWriter{
 			w: writer,
 			callback: func(data []byte) {
@@ -1570,14 +1978,14 @@ func (h *proxyHandler) proxyRequestStreamed(w http.ResponseWriter, r *http.Reque
 				// For Claude, accumulate input (message_start) and output (message_delta)
 				// into a single record before emitting.
 				if acc.Type == AccountTypeClaude {
-					if claudeAccum == nil {
-						claudeAccum = ru
+					if claudeAccum2 == nil {
+						claudeAccum2 = ru
 					} else {
-						claudeAccum.OutputTokens = ru.OutputTokens
-						claudeAccum.BillableTokens = clampNonNegative(
-							claudeAccum.InputTokens - claudeAccum.CachedInputTokens + ru.OutputTokens)
-						ru = claudeAccum
-						claudeAccum = nil
+						claudeAccum2.OutputTokens = ru.OutputTokens
+						claudeAccum2.BillableTokens = clampNonNegative(
+							claudeAccum2.InputTokens - claudeAccum2.CachedInputTokens + ru.OutputTokens)
+						ru = claudeAccum2
+						claudeAccum2 = nil
 						ru.AccountID = acc.ID
 						ru.UserID = userID
 						ru.AccountType = acc.Type
@@ -1615,12 +2023,38 @@ func (h *proxyHandler) proxyRequestStreamed(w http.ResponseWriter, r *http.Reque
 	}
 
 	_, copyErr := io.Copy(writer, resp.Body)
+	if hw2 != nil {
+		hw2.Stop()
+	}
 	if fw != nil {
 		fw.stop()
 	}
+
+	// Flush any accumulated Claude usage that wasn't emitted (e.g., stream ended
+	// without message_delta, or only got message_start before error/disconnect).
+	if claudeAccum2 != nil {
+		claudeAccum2.AccountID = acc.ID
+		claudeAccum2.UserID = userID
+		claudeAccum2.AccountType = acc.Type
+		acc.mu.Lock()
+		claudeAccum2.PlanType = acc.PlanType
+		acc.mu.Unlock()
+		if claudeAccum2.PrimaryUsedPct == 0 && headerPrimaryPct > 0 {
+			claudeAccum2.PrimaryUsedPct = headerPrimaryPct
+		}
+		if claudeAccum2.SecondaryUsedPct == 0 && headerSecondaryPct > 0 {
+			claudeAccum2.SecondaryUsedPct = headerSecondaryPct
+		}
+		// Model should already be set from ParseUsage (extracted from message_start)
+		h.recordUsage(acc, *claudeAccum2)
+		claudeAccum2 = nil
+	}
+
 	if copyErr != nil {
-		h.recent.add(copyErr.Error())
-		h.metrics.inc("error", acc.ID)
+		if ctx.Err() == nil {
+			h.recent.add(copyErr.Error())
+			h.metrics.inc("error", acc.ID)
+		}
 		if idleReader != nil {
 			log.Printf("[%s] SSE stream error (account=%s): %v", reqID, acc.ID, copyErr)
 		}
@@ -1656,7 +2090,7 @@ func (h *proxyHandler) proxyRequestStreamed(w http.ResponseWriter, r *http.Reque
 
 	h.metrics.inc(strconv.Itoa(resp.StatusCode), acc.ID)
 
-	if h.cfg.debug {
+	if h.cfg.debug.Load() {
 		log.Printf("[%s] streamed done status=%d account=%s duration_ms=%d", reqID, resp.StatusCode, acc.ID, time.Since(start).Milliseconds())
 	}
 }
@@ -1686,11 +2120,63 @@ func clientOrDefaultTimeout(r *http.Request, reqTimeout, streamTimeout time.Dura
 	return reqTimeout
 }
 
-func isRetryableStatus(code int) bool {
-	if code == http.StatusUnauthorized || code == http.StatusForbidden {
-		return true
+
+func (h *proxyHandler) logRateLimitResponseHeaders(reqID string, accountType AccountType, hdr http.Header) {
+	if h == nil || !h.cfg.debug.Load() {
+		return
 	}
-	return code >= 500 && code <= 599
+	if hdr == nil {
+		return
+	}
+
+	keys := []string{
+		"anthropic-ratelimit-unified-primary-utilization",
+		"anthropic-ratelimit-unified-secondary-utilization",
+		"anthropic-ratelimit-unified-tokens-utilization",
+		"anthropic-ratelimit-unified-requests-utilization",
+		"anthropic-ratelimit-unified-5h-utilization",
+		"anthropic-ratelimit-unified-7d-utilization",
+		"anthropic-ratelimit-unified-reset",
+		"anthropic-ratelimit-unified-primary-reset",
+		"anthropic-ratelimit-unified-secondary-reset",
+		"anthropic-ratelimit-unified-tokens-reset",
+		"anthropic-ratelimit-unified-requests-reset",
+		"anthropic-ratelimit-unified-5h-reset",
+		"anthropic-ratelimit-unified-7d-reset",
+		"anthropic-ratelimit-unified-status",
+		"anthropic-ratelimit-unified-5h-status",
+		"anthropic-ratelimit-unified-7d-status",
+		"x-ratelimit-limit-requests",
+		"x-ratelimit-remaining-requests",
+		"x-ratelimit-reset-requests",
+		"x-ratelimit-limit-tokens",
+		"x-ratelimit-remaining-tokens",
+		"x-ratelimit-reset-tokens",
+		"x-ratelimit-limit",
+		"x-ratelimit-remaining",
+		"x-ratelimit-reset",
+	}
+
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		if v := strings.TrimSpace(hdr.Get(key)); v != "" {
+			parts = append(parts, key+"="+v)
+		}
+	}
+
+	if len(parts) == 0 {
+		for key := range hdr {
+			lower := strings.ToLower(key)
+			if strings.Contains(lower, "ratelimit") || strings.Contains(lower, "rate-limit") || strings.Contains(lower, "anthropic-ratelimit") {
+				parts = append(parts, key+"="+hdr.Get(key))
+			}
+		}
+	}
+
+	if len(parts) == 0 {
+		return
+	}
+	log.Printf("[%s] upstream %s rate-limit headers: %s", reqID, accountType, strings.Join(parts, ", "))
 }
 
 func isRateLimitError(err error) bool {
@@ -1725,25 +2211,49 @@ func parseRetryAfter(h http.Header) (time.Duration, bool) {
 	return 0, false
 }
 
-func (h *proxyHandler) applyRateLimit(a *Account, hdr http.Header, fallback time.Duration) time.Duration {
+// backoffDuration returns the exponential backoff for the given level.
+// Formula: min(1s * 2^level, 30m). Level 0 = 1s, 1 = 2s, 2 = 4s, ... 10 = ~17m, 11+ = 30m.
+func backoffDuration(level int) time.Duration {
+	const base = 1 * time.Second
+	const maxBackoff = 30 * time.Minute
+	d := base << uint(level) // 1s * 2^level
+	if d > maxBackoff || d <= 0 {
+		return maxBackoff
+	}
+	return d
+}
+
+func (h *proxyHandler) applyRateLimit(a *Account, hdr http.Header) time.Duration {
 	if a == nil {
 		return 0
 	}
+	// Prefer Retry-After header if present; otherwise use exponential backoff.
 	wait, ok := parseRetryAfter(hdr)
 	if !ok {
-		wait = fallback
+		a.mu.Lock()
+		wait = backoffDuration(a.BackoffLevel)
+		a.BackoffLevel++
+		a.mu.Unlock()
+	} else {
+		// Still bump level so repeated rate limits get longer backoffs.
+		a.mu.Lock()
+		a.BackoffLevel++
+		a.mu.Unlock()
 	}
+
 	until := time.Now().Add(wait)
 	if wait <= 0 {
 		return 0
 	}
 
 	a.mu.Lock()
-
 	if a.RateLimitUntil.Before(until) {
 		a.RateLimitUntil = until
 	}
 	a.mu.Unlock()
+	if h.cfg.debug.Load() {
+		log.Printf("rate-limit backoff: account=%s level=%d wait=%s", a.ID, a.BackoffLevel, wait)
+	}
 	return wait
 }
 
@@ -1817,7 +2327,7 @@ func (h *proxyHandler) proxyPassthrough(w http.ResponseWriter, r *http.Request, 
 	}
 	streamBody := shouldStreamBody(r, h.cfg.maxInMemoryBodyBytes)
 	if streamBody {
-		if h.cfg.debug {
+		if h.cfg.debug.Load() {
 			log.Printf("[%s] passthrough streaming body: method=%s path=%s provider=%s content-length=%d",
 				reqID, r.Method, r.URL.Path, providerType, r.ContentLength)
 		}
@@ -1831,7 +2341,7 @@ func (h *proxyHandler) proxyPassthrough(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	if h.cfg.debug {
+	if h.cfg.debug.Load() {
 		log.Printf("[%s] passthrough %s %s provider=%s content-type=%q body_bytes=%d",
 			reqID, r.Method, r.URL.Path, providerType,
 			r.Header.Get("Content-Type"), len(bodyBytes))
@@ -1890,7 +2400,7 @@ func (h *proxyHandler) proxyPassthrough(w http.ResponseWriter, r *http.Request, 
 		}
 	}
 
-	if h.cfg.debug {
+	if h.cfg.debug.Load() {
 		log.Printf("[%s] passthrough -> %s %s", reqID, outReq.Method, outReq.URL.String())
 	}
 
@@ -1921,6 +2431,8 @@ func (h *proxyHandler) proxyPassthrough(w http.ResponseWriter, r *http.Request, 
 	// Write response to client
 	copyHeader(w.Header(), resp.Header)
 	removeHopByHopHeaders(w.Header())
+	h.logRateLimitResponseHeaders(reqID, providerType, resp.Header)
+	h.replaceUsageHeaders(w.Header())
 	w.WriteHeader(resp.StatusCode)
 
 	flusher, _ := w.(http.Flusher)
@@ -1942,8 +2454,10 @@ func (h *proxyHandler) proxyPassthrough(w http.ResponseWriter, r *http.Request, 
 	}
 
 	if _, copyErr := io.Copy(writer, resp.Body); copyErr != nil {
-		h.recent.add(copyErr.Error())
-		h.metrics.inc("error", "passthrough")
+		if r.Context().Err() == nil {
+			h.recent.add(copyErr.Error())
+			h.metrics.inc("error", "passthrough")
+		}
 		if idleReader != nil {
 			log.Printf("[%s] passthrough SSE stream error: %v", reqID, copyErr)
 		}
@@ -1952,7 +2466,7 @@ func (h *proxyHandler) proxyPassthrough(w http.ResponseWriter, r *http.Request, 
 
 	h.metrics.inc(strconv.Itoa(resp.StatusCode), "passthrough")
 
-	if h.cfg.debug {
+	if h.cfg.debug.Load() {
 		log.Printf("[%s] passthrough done status=%d duration_ms=%d", reqID, resp.StatusCode, time.Since(start).Milliseconds())
 	}
 }
@@ -2004,7 +2518,7 @@ func (h *proxyHandler) proxyPassthroughStreamed(w http.ResponseWriter, r *http.R
 		}
 	}
 
-	if h.cfg.debug {
+	if h.cfg.debug.Load() {
 		log.Printf("[%s] passthrough streamed -> %s %s", reqID, outReq.Method, outReq.URL.String())
 	}
 
@@ -2023,6 +2537,8 @@ func (h *proxyHandler) proxyPassthroughStreamed(w http.ResponseWriter, r *http.R
 	// Write response to client
 	copyHeader(w.Header(), resp.Header)
 	removeHopByHopHeaders(w.Header())
+	h.logRateLimitResponseHeaders(reqID, providerType, resp.Header)
+	h.replaceUsageHeaders(w.Header())
 	w.WriteHeader(resp.StatusCode)
 
 	flusher, _ := w.(http.Flusher)
@@ -2054,7 +2570,7 @@ func (h *proxyHandler) proxyPassthroughStreamed(w http.ResponseWriter, r *http.R
 
 	h.metrics.inc(strconv.Itoa(resp.StatusCode), "passthrough")
 
-	if h.cfg.debug {
+	if h.cfg.debug.Load() {
 		log.Printf("[%s] passthrough streamed done status=%d duration_ms=%d", reqID, resp.StatusCode, time.Since(start).Milliseconds())
 	}
 }
@@ -2067,7 +2583,8 @@ func (h *proxyHandler) tryOnce(
 	provider Provider,
 	acc *Account,
 	reqID string,
-) (*http.Response, *bytes.Buffer, bool, error) { // Added refreshFailed return value
+	translateDir TranslateDirection,
+) (*http.Response, *bytes.Buffer, bool, error) {
 	if acc == nil {
 		return nil, nil, false, errors.New("nil account")
 	}
@@ -2076,9 +2593,9 @@ func (h *proxyHandler) tryOnce(
 	if !h.cfg.disableRefresh && h.needsRefresh(acc) {
 		if err := h.refreshAccount(ctx, acc); err != nil {
 			if isRateLimitError(err) {
-				h.applyRateLimit(acc, nil, defaultRateLimitBackoff)
+				h.applyRateLimit(acc, nil)
 			}
-			if h.cfg.debug {
+			if h.cfg.debug.Load() {
 				log.Printf("[%s] refresh %s failed: %v (continuing with existing token)", reqID, acc.ID, err)
 			}
 		}
@@ -2131,8 +2648,78 @@ func (h *proxyHandler) tryOnce(
 		// Use provider's SetAuthHeaders method for provider-specific auth
 		provider.SetAuthHeaders(outReq, acc)
 
+		// When translating, body size changes — remove the client's Content-Length
+		// so Go's HTTP client recalculates it from the actual body.
+		// Force Accept-Encoding: identity so we get uncompressed response bodies
+		// for translation (deleting it would let Go's transport add gzip, which
+		// breaks SSE streaming translation).
+		if translateDir != TranslateNone {
+			outReq.Header.Del("Content-Length")
+			outReq.ContentLength = int64(len(bodyBytes))
+			outReq.Header.Set("Accept-Encoding", "identity")
+		}
+
+		// Force uncompressed response for model catalog so we can inject Claude models
+		if strings.Contains(in.URL.Path, "codex/models") {
+			outReq.Header.Set("Accept-Encoding", "identity")
+		}
+
+		// Adjust headers when doing format translation
+		if translateDir == TranslateClaudeToOAI || translateDir == TranslateClaudeToResponses {
+			// Client sent Claude headers but upstream is OpenAI/Codex — remove Claude-specific headers
+			outReq.Header.Del("anthropic-version")
+			outReq.Header.Del("anthropic-beta")
+			outReq.Header.Del("anthropic-dangerous-direct-browser-access")
+			outReq.Header.Del("Sec-Fetch-Mode")
+			outReq.Header.Del("Accept-Language")
+			outReq.Header.Del("X-App")
+			// Remove x-stainless-* headers (Anthropic SDK internals)
+			for key := range outReq.Header {
+				if strings.HasPrefix(strings.ToLower(key), "x-stainless-") {
+					outReq.Header.Del(key)
+				}
+			}
+			// For Codex Responses API, force SSE accept since Codex always streams
+			if translateDir == TranslateClaudeToResponses {
+				outReq.Header.Set("Accept", "text/event-stream")
+			}
+		} else if translateDir == TranslateOAIToClaude || translateDir == TranslateResponsesToClaude {
+			// Client sent OpenAI/Responses format but upstream is Claude — make request
+			// indistinguishable from a native Claude Code request.
+			outReq.Header.Set("anthropic-version", "2023-06-01")
+			outReq.Header.Set("anthropic-beta", "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27")
+			outReq.Header.Set("anthropic-dangerous-direct-browser-access", "true")
+			outReq.Header.Set("User-Agent", "claude-cli/2.1.66 (external, cli)")
+			outReq.Header.Set("X-App", "cli")
+			// Set Accept based on whether the translated body requests streaming
+			acceptHeader := "application/json"
+			var bodyObj map[string]any
+			if json.Unmarshal(bodyBytes, &bodyObj) == nil {
+				if s, ok := bodyObj["stream"].(bool); ok && s {
+					acceptHeader = "text/event-stream"
+				}
+			}
+			outReq.Header.Set("Accept", acceptHeader)
+			outReq.Header.Set("Accept-Language", "*")
+			outReq.Header.Set("Content-Type", "application/json")
+			outReq.Header.Set("Sec-Fetch-Mode", "cors")
+			// Add x-stainless headers to match Anthropic SDK fingerprint
+			outReq.Header.Set("X-Stainless-Lang", "js")
+			outReq.Header.Set("X-Stainless-Runtime", "node")
+			outReq.Header.Set("X-Stainless-Runtime-Version", "v22.22.0")
+			outReq.Header.Set("X-Stainless-Arch", "arm64")
+			outReq.Header.Set("X-Stainless-Os", "Linux")
+			outReq.Header.Set("X-Stainless-Package-Version", "0.74.0")
+			outReq.Header.Set("X-Stainless-Retry-Count", "0")
+			outReq.Header.Set("X-Stainless-Timeout", "600")
+			outReq.Header.Set("X-Stainless-Helper-Method", "stream")
+			// Remove any OpenAI-specific headers that might leak
+			outReq.Header.Del("openai-beta")
+			outReq.Header.Del("openai-organization")
+		}
+
 		// Debug: log ALL outgoing headers
-		if h.cfg.debug {
+		if h.cfg.debug.Load() {
 			var hdrs []string
 			for k, v := range outReq.Header {
 				val := v[0]
@@ -2153,7 +2740,7 @@ func (h *proxyHandler) tryOnce(
 		return nil, nil, false, err
 	}
 
-	if h.cfg.debug {
+	if h.cfg.debug.Load() {
 		acc.mu.Lock()
 		log.Printf("[%s] -> %s %s (account=%s account_id=%s)", reqID, outReq.Method, outReq.URL.String(), acc.ID, acc.AccountID)
 		acc.mu.Unlock()
@@ -2170,7 +2757,7 @@ func (h *proxyHandler) tryOnce(
 	// If we got a 401/403, try to refresh and retry on the *same* account once.
 	if (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) && !h.cfg.disableRefresh {
 		// Log the error response body for debugging
-		if h.cfg.debug {
+		if h.cfg.debug.Load() {
 			errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 			// Try to decompress if gzip
 			decompressed := bodyForInspection(nil, errBody)
@@ -2186,7 +2773,7 @@ func (h *proxyHandler) tryOnce(
 				if err != nil {
 					return nil, nil, false, err
 				}
-				if h.cfg.debug {
+				if h.cfg.debug.Load() {
 					acc.mu.Lock()
 					log.Printf("[%s] retry after refresh -> %s %s (account=%s account_id=%s)", reqID, outReq.Method, outReq.URL.String(), acc.ID, acc.AccountID)
 					acc.mu.Unlock()
@@ -2199,7 +2786,7 @@ func (h *proxyHandler) tryOnce(
 					return nil, nil, false, err
 				}
 				// Log response after retry
-				if h.cfg.debug && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
+				if h.cfg.debug.Load() && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) {
 					errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 					decompressed := bodyForInspection(nil, errBody)
 					log.Printf("[%s] after refresh retry got %d, body: %s", reqID, resp.StatusCode, safeText(decompressed))
@@ -2211,7 +2798,7 @@ func (h *proxyHandler) tryOnce(
 			} else {
 				errStr := err.Error()
 				if isRateLimitError(err) {
-					h.applyRateLimit(acc, nil, defaultRateLimitBackoff)
+					h.applyRateLimit(acc, nil)
 				} else if strings.Contains(errStr, "invalid_grant") || strings.Contains(errStr, "refresh_token_reused") {
 					// If refresh token is permanently invalid, mark account as dead immediately
 					acc.mu.Lock()
@@ -2227,7 +2814,7 @@ func (h *proxyHandler) tryOnce(
 					// Other non-rate-limited failures also count as refresh failed
 					refreshFailed = true
 				}
-				if h.cfg.debug {
+				if h.cfg.debug.Load() {
 					log.Printf("[%s] refresh failed for %s: %v (refreshFailed=%v)", reqID, acc.ID, err, refreshFailed)
 				}
 			}
@@ -2290,7 +2877,6 @@ const refreshMinInterval = 5 * time.Second
 // 15 minutes balances between preventing hammering and allowing recovery from expired tokens
 const refreshPerAccountInterval = 15 * time.Minute
 
-const defaultRateLimitBackoff = 30 * time.Second
 
 func (h *proxyHandler) refreshAccount(ctx context.Context, a *Account) error {
 	if a == nil {
@@ -2365,15 +2951,6 @@ func (h *proxyHandler) refreshAccountOnce(ctx context.Context, a *Account) error
 	return err
 }
 
-// Note: Account refresh logic is now in the provider files:
-// - provider_codex.go: CodexProvider.RefreshToken
-// - provider_claude.go: ClaudeProvider.RefreshToken
-// - provider_gemini.go: GeminiProvider.RefreshToken
-
-// Note: Usage tracking functions are now in usage_tracking.go:
-// - startUsagePoller, refreshUsageIfStale, fetchUsage, buildWhamUsageURL
-// - DailyBreakdownDay, fetchDailyBreakdownData, replaceUsageHeaders
-
 func (h *proxyHandler) updateUsageFromBody(a *Account, sample []byte) {
 	if a == nil || len(sample) == 0 {
 		return
@@ -2414,21 +2991,13 @@ func (h *proxyHandler) updateUsageFromBody(a *Account, sample []byte) {
 
 		// Legacy: rate_limit at top level
 		if rl, ok := obj["rate_limit"].(map[string]any); ok {
-			converted := map[string]interface{}{}
-			for k, v := range rl {
-				converted[k] = v
-			}
-			a.applyRateLimitObject(converted)
+			a.applyRateLimitObject(rl)
 		}
 
 		// Legacy: response object with usage
 		if resp, ok := obj["response"].(map[string]any); ok {
 			if rl, ok := resp["rate_limit"].(map[string]any); ok {
-				converted := map[string]interface{}{}
-				for k, v := range rl {
-					converted[k] = v
-				}
-				a.applyRateLimitObject(converted)
+				a.applyRateLimitObject(rl)
 			}
 			if ru := parseRequestUsage(resp); ru != nil {
 				ru.AccountID = a.ID

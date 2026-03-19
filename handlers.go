@@ -142,7 +142,7 @@ func (h *proxyHandler) resurrectAccount(w http.ResponseWriter, accountID string)
 		}
 	}
 
-	http.Error(w, "account not found", http.StatusNotFound)
+	respondJSONError(w, http.StatusNotFound, "account not found")
 }
 
 // clearAllRateLimits clears rate limits on all accounts.
@@ -177,7 +177,7 @@ func (h *proxyHandler) purgeAnonymousUsers(w http.ResponseWriter) {
 	deleted, err := h.store.purgeNonPoolUsers(allowed)
 	if err != nil {
 		log.Printf("purge anonymous users failed: %v", err)
-		http.Error(w, "purge failed: "+err.Error(), http.StatusInternalServerError)
+		respondJSONError(w, http.StatusInternalServerError, "purge failed: "+err.Error())
 		return
 	}
 
@@ -198,7 +198,7 @@ func (h *proxyHandler) forceRefreshAccount(w http.ResponseWriter, accountID stri
 	h.pool.mu.RUnlock()
 
 	if target == nil {
-		http.Error(w, "account not found", http.StatusNotFound)
+		respondJSONError(w, http.StatusNotFound, "account not found")
 		return
 	}
 
@@ -210,7 +210,7 @@ func (h *proxyHandler) forceRefreshAccount(w http.ResponseWriter, accountID stri
 	target.mu.Unlock()
 
 	if !hasRefreshToken {
-		http.Error(w, "account has no refresh token", http.StatusBadRequest)
+		respondJSONError(w, http.StatusBadRequest, "account has no refresh token")
 		return
 	}
 
@@ -218,7 +218,7 @@ func (h *proxyHandler) forceRefreshAccount(w http.ResponseWriter, accountID stri
 	err := h.refreshAccountOnce(context.Background(), target)
 	if err != nil {
 		log.Printf("force refresh %s failed: %v", accountID, err)
-		respondJSON(w, map[string]any{"status": "error", "account": accountID, "error": err.Error()})
+		respondJSONError(w, http.StatusInternalServerError, "refresh failed: "+err.Error())
 		return
 	}
 
@@ -344,30 +344,30 @@ func (h *proxyHandler) handlePoolUserRefresh(w http.ResponseWriter, refreshToken
 	// Extract user ID from refresh token: poolrt_<user_id>_<random>
 	parts := strings.Split(refreshToken, "_")
 	if len(parts) < 3 {
-		http.Error(w, "invalid refresh token", http.StatusBadRequest)
+		respondJSONError(w, http.StatusBadRequest, "invalid refresh token")
 		return
 	}
 	userID := parts[1]
 
 	user := h.poolUsers.Get(userID)
 	if user == nil {
-		http.Error(w, "user not found", http.StatusNotFound)
+		respondJSONError(w, http.StatusNotFound, "user not found")
 		return
 	}
 	if user.Disabled {
-		http.Error(w, "user disabled", http.StatusForbidden)
+		respondJSONError(w, http.StatusForbidden, "user disabled")
 		return
 	}
 
 	secret := getPoolJWTSecret()
 	if secret == "" {
-		http.Error(w, "JWT secret not configured", http.StatusServiceUnavailable)
+		respondJSONError(w, http.StatusServiceUnavailable, "JWT secret not configured")
 		return
 	}
 
 	auth, err := generateCodexAuth(secret, user)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		respondJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -433,7 +433,7 @@ func (h *proxyHandler) handleClaudeProfile(w http.ResponseWriter, r *http.Reques
 
 // handleClaudeUsage returns blended usage from all Claude accounts
 func (h *proxyHandler) handleClaudeUsage(w http.ResponseWriter, r *http.Request) {
-	h.refreshUsageIfStale()
+	h.pollUpstreamUsage()
 
 	// Use time-weighted usage for accurate pool utilization
 	snap := h.pool.timeWeightedUsageByType(AccountTypeClaude)
@@ -515,7 +515,7 @@ func (h *proxyHandler) handleAggregatedUsage(w http.ResponseWriter, reqID string
 			"providers":         poolStats.Providers,
 		},
 	}
-	if h.cfg.debug {
+	if h.cfg.debug.Load() {
 		log.Printf("[%s] aggregate usage served locally", reqID)
 	}
 	w.Header().Set("Content-Type", "application/json")

@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -17,17 +19,17 @@ func (h *proxyHandler) startUsagePoller() {
 		return
 	}
 	// Fetch usage immediately on startup
-	go h.refreshUsageIfStale()
+	go h.pollUpstreamUsage()
 
 	ticker := time.NewTicker(h.cfg.usageRefresh)
 	go func() {
 		for range ticker.C {
-			h.refreshUsageIfStale()
+			h.pollUpstreamUsage()
 		}
 	}()
 }
 
-func (h *proxyHandler) refreshUsageIfStale() {
+func (h *proxyHandler) pollUpstreamUsage() {
 	now := time.Now()
 	h.pool.mu.RLock()
 	accs := append([]*Account{}, h.pool.accounts...)
@@ -62,7 +64,7 @@ func (h *proxyHandler) refreshUsageIfStale() {
 			if !h.cfg.disableRefresh && h.needsRefresh(a) {
 				if err := h.refreshAccount(context.Background(), a); err != nil {
 					if isRateLimitError(err) {
-						h.applyRateLimit(a, nil, defaultRateLimitBackoff)
+						h.applyRateLimit(a, nil)
 						continue
 					}
 					log.Printf("proactive refresh for %s failed: %v", a.ID, err)
@@ -80,8 +82,24 @@ func (h *proxyHandler) refreshUsageIfStale() {
 			continue
 		}
 
-		// External API-key providers (Kimi, MiniMax) don't have usage endpoints
-		if accType == AccountTypeKimi || accType == AccountTypeMinimax {
+		// MiniMax doesn't have a dedicated usage endpoint; usage is captured from response headers
+		if accType == AccountTypeMinimax {
+			// Seed initial usage via a lightweight request if no usage data yet
+			if retrievedAt.IsZero() {
+				if err := h.seedMinimaxUsage(now, a); err != nil && h.cfg.debug.Load() {
+					log.Printf("minimax usage seed %s failed: %v", a.ID, err)
+				}
+			}
+			continue
+		}
+
+		// Kimi has a dedicated usage endpoint
+		if accType == AccountTypeKimi {
+			if retrievedAt.IsZero() || now.Sub(retrievedAt) >= h.cfg.usageRefresh {
+				if err := h.fetchKimiUsage(now, a); err != nil && h.cfg.debug.Load() {
+					log.Printf("kimi usage fetch %s failed: %v", a.ID, err)
+				}
+			}
 			continue
 		}
 
@@ -91,7 +109,7 @@ func (h *proxyHandler) refreshUsageIfStale() {
 			if !h.cfg.disableRefresh && h.needsRefresh(a) {
 				if err := h.refreshAccount(context.Background(), a); err != nil {
 					if isRateLimitError(err) {
-						h.applyRateLimit(a, nil, defaultRateLimitBackoff)
+						h.applyRateLimit(a, nil)
 						continue
 					}
 					log.Printf("proactive refresh for %s failed: %v", a.ID, err)
@@ -103,14 +121,14 @@ func (h *proxyHandler) refreshUsageIfStale() {
 						a.Penalty = 0
 					}
 					a.mu.Unlock()
-					if h.cfg.debug {
+					if h.cfg.debug.Load() {
 						log.Printf("claude refresh %s: success", a.ID)
 					}
 				}
 			}
 			// Fetch Claude usage if stale
 			if retrievedAt.IsZero() || now.Sub(retrievedAt) >= h.cfg.usageRefresh {
-				if err := h.fetchClaudeUsage(now, a); err != nil && h.cfg.debug {
+				if err := h.fetchClaudeUsage(now, a); err != nil && h.cfg.debug.Load() {
 					log.Printf("claude usage fetch %s failed: %v", a.ID, err)
 				}
 			}
@@ -120,7 +138,7 @@ func (h *proxyHandler) refreshUsageIfStale() {
 		if !retrievedAt.IsZero() && now.Sub(retrievedAt) < h.cfg.usageRefresh {
 			continue
 		}
-		if err := h.fetchUsage(now, a); err != nil && h.cfg.debug {
+		if err := h.fetchUsage(now, a); err != nil && h.cfg.debug.Load() {
 			log.Printf("usage fetch %s failed: %v", a.ID, err)
 		}
 	}
@@ -132,11 +150,11 @@ func (h *proxyHandler) fetchUsage(now time.Time, a *Account) error {
 	if !h.cfg.disableRefresh && h.needsRefresh(a) {
 		if err := h.refreshAccount(context.Background(), a); err != nil {
 			errStr := err.Error()
-			if h.cfg.debug {
+			if h.cfg.debug.Load() {
 				log.Printf("proactive refresh for %s failed: %v", a.ID, errStr)
 			}
 			if isRateLimitError(err) {
-				h.applyRateLimit(a, nil, defaultRateLimitBackoff)
+				h.applyRateLimit(a, nil)
 				return nil
 			}
 			// If refresh token is permanently invalid, mark account as dead
@@ -193,7 +211,7 @@ func (h *proxyHandler) fetchUsage(now time.Time, a *Account) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusTooManyRequests {
-		h.applyRateLimit(a, resp.Header, defaultRateLimitBackoff)
+		h.applyRateLimit(a, resp.Header)
 		return nil
 	}
 
@@ -213,7 +231,7 @@ func (h *proxyHandler) fetchUsage(now time.Time, a *Account) error {
 				}
 				defer resp.Body.Close()
 				if resp.StatusCode == http.StatusTooManyRequests {
-					h.applyRateLimit(a, resp.Header, defaultRateLimitBackoff)
+					h.applyRateLimit(a, resp.Header)
 					return nil
 				}
 				// If still 401/403 after successful refresh, add penalty but don't mark dead
@@ -229,7 +247,7 @@ func (h *proxyHandler) fetchUsage(now time.Time, a *Account) error {
 				// Refresh failed - check if it's a permanent failure
 				errStr := err.Error()
 				if isRateLimitError(err) {
-					h.applyRateLimit(a, nil, defaultRateLimitBackoff)
+					h.applyRateLimit(a, nil)
 					return nil
 				}
 				if strings.Contains(errStr, "invalid_grant") || strings.Contains(errStr, "refresh_token_reused") {
@@ -384,7 +402,7 @@ func (h *proxyHandler) fetchClaudeUsage(now time.Time, a *Account) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusTooManyRequests {
-		h.applyRateLimit(a, resp.Header, defaultRateLimitBackoff)
+		h.applyRateLimit(a, resp.Header)
 		return nil
 	}
 
@@ -414,7 +432,7 @@ func (h *proxyHandler) fetchClaudeUsage(now time.Time, a *Account) error {
 				}
 				defer resp.Body.Close()
 			} else if isRateLimitError(err) {
-				h.applyRateLimit(a, nil, defaultRateLimitBackoff)
+				h.applyRateLimit(a, nil)
 				return nil
 			}
 		}
@@ -423,7 +441,7 @@ func (h *proxyHandler) fetchClaudeUsage(now time.Time, a *Account) error {
 			a.mu.Lock()
 			a.Penalty += 0.3
 			a.mu.Unlock()
-			if h.cfg.debug {
+			if h.cfg.debug.Load() {
 				if refreshAttempted && refreshSucceeded {
 					log.Printf("claude usage fetch %s got 401/403 even after refresh; keeping account alive and adding penalty", a.ID)
 				} else {
@@ -518,6 +536,7 @@ func (h *proxyHandler) fetchClaudeUsage(now time.Time, a *Account) error {
 	a.mu.Lock()
 	a.Usage = mergeUsage(a.Usage, snap)
 	a.mu.Unlock()
+	syncUsageCooldown(a)
 
 	return nil
 }
@@ -583,7 +602,8 @@ func (h *proxyHandler) fetchDailyBreakdownData(a *Account) ([]DailyBreakdownDay,
 
 // replaceUsageHeaders replaces individual account usage headers with pool aggregate values.
 // This shows the client the overall pool capacity rather than a single account's usage.
-// Supports both Codex (X-Codex-*) and Claude (anthropic-ratelimit-unified-*) headers.
+// Supports Codex (X-Codex-*), Claude (anthropic-ratelimit-unified-*), and
+// Kimi/OpenAI-style (x-ratelimit-*) headers.
 func (h *proxyHandler) replaceUsageHeaders(hdr http.Header) {
 	// Use time-weighted usage for more accurate pool utilization reporting.
 	// This discounts accounts that are about to reset (their high usage doesn't matter).
@@ -612,10 +632,21 @@ func (h *proxyHandler) replaceUsageHeaders(hdr http.Header) {
 		hdr.Set("X-Codex-Secondary-Window-Minutes", strconv.Itoa(codexSnap.SecondaryWindowMinutes))
 	}
 
-	// Claude unified rate limit headers: Replace with time-weighted pool values
-	// Only replace if the header exists (indicates this was a Claude request)
+	// Claude unified rate limit headers: Replace with time-weighted pool values.
+	// Only replace if the header exists (indicates this was a Claude request).
 	if hdr.Get("anthropic-ratelimit-unified-primary-utilization") != "" ||
-		hdr.Get("anthropic-ratelimit-unified-tokens-utilization") != "" {
+		hdr.Get("anthropic-ratelimit-unified-tokens-utilization") != "" ||
+		hdr.Get("anthropic-ratelimit-unified-requests-utilization") != "" ||
+		hdr.Get("anthropic-ratelimit-unified-5h-utilization") != "" ||
+		hdr.Get("anthropic-ratelimit-unified-7d-utilization") != "" ||
+		hdr.Get("anthropic-ratelimit-unified-primary-reset") != "" ||
+		hdr.Get("anthropic-ratelimit-unified-secondary-reset") != "" ||
+		hdr.Get("anthropic-ratelimit-unified-5h-reset") != "" ||
+		hdr.Get("anthropic-ratelimit-unified-7d-reset") != "" ||
+		hdr.Get("anthropic-ratelimit-unified-reset") != "" ||
+		hdr.Get("anthropic-ratelimit-unified-status") != "" ||
+		hdr.Get("anthropic-ratelimit-unified-5h-status") != "" ||
+		hdr.Get("anthropic-ratelimit-unified-7d-status") != "" {
 		claudeSnap := h.pool.timeWeightedUsageByType(AccountTypeClaude)
 		if claudeSnap.RetrievedAt.IsZero() {
 			claudeSnap = snap // Fall back to overall time-weighted average
@@ -625,27 +656,35 @@ func (h *proxyHandler) replaceUsageHeaders(hdr http.Header) {
 		primaryUtil := fmt.Sprintf("%.1f", claudeSnap.PrimaryUsedPercent*100)
 		hdr.Set("anthropic-ratelimit-unified-primary-utilization", primaryUtil)
 		hdr.Set("anthropic-ratelimit-unified-tokens-utilization", primaryUtil)
+		hdr.Set("anthropic-ratelimit-unified-5h-utilization", primaryUtil)
 
 		// Replace secondary/requests utilization
 		secondaryUtil := fmt.Sprintf("%.1f", claudeSnap.SecondaryUsedPercent*100)
 		hdr.Set("anthropic-ratelimit-unified-secondary-utilization", secondaryUtil)
 		hdr.Set("anthropic-ratelimit-unified-requests-utilization", secondaryUtil)
+		hdr.Set("anthropic-ratelimit-unified-7d-utilization", secondaryUtil)
 
 		// Use earliest reset time (soonest capacity refill) instead of latest
 		now := time.Now()
 		if !claudeSnap.PrimaryResetAt.IsZero() {
 			hdr.Set("anthropic-ratelimit-unified-primary-reset", strconv.FormatInt(claudeSnap.PrimaryResetAt.Unix(), 10))
 			hdr.Set("anthropic-ratelimit-unified-tokens-reset", strconv.FormatInt(claudeSnap.PrimaryResetAt.Unix(), 10))
+			hdr.Set("anthropic-ratelimit-unified-5h-reset", strconv.FormatInt(claudeSnap.PrimaryResetAt.Unix(), 10))
+			hdr.Set("anthropic-ratelimit-unified-reset", strconv.FormatInt(claudeSnap.PrimaryResetAt.Unix(), 10))
 		} else {
 			hdr.Set("anthropic-ratelimit-unified-primary-reset", strconv.FormatInt(now.Add(5*time.Hour).Unix(), 10))
 			hdr.Set("anthropic-ratelimit-unified-tokens-reset", strconv.FormatInt(now.Add(5*time.Hour).Unix(), 10))
+			hdr.Set("anthropic-ratelimit-unified-5h-reset", strconv.FormatInt(now.Add(5*time.Hour).Unix(), 10))
+			hdr.Set("anthropic-ratelimit-unified-reset", strconv.FormatInt(now.Add(5*time.Hour).Unix(), 10))
 		}
 		if !claudeSnap.SecondaryResetAt.IsZero() {
 			hdr.Set("anthropic-ratelimit-unified-secondary-reset", strconv.FormatInt(claudeSnap.SecondaryResetAt.Unix(), 10))
 			hdr.Set("anthropic-ratelimit-unified-requests-reset", strconv.FormatInt(claudeSnap.SecondaryResetAt.Unix(), 10))
+			hdr.Set("anthropic-ratelimit-unified-7d-reset", strconv.FormatInt(claudeSnap.SecondaryResetAt.Unix(), 10))
 		} else {
 			hdr.Set("anthropic-ratelimit-unified-secondary-reset", strconv.FormatInt(now.Add(7*24*time.Hour).Unix(), 10))
 			hdr.Set("anthropic-ratelimit-unified-requests-reset", strconv.FormatInt(now.Add(7*24*time.Hour).Unix(), 10))
+			hdr.Set("anthropic-ratelimit-unified-7d-reset", strconv.FormatInt(now.Add(7*24*time.Hour).Unix(), 10))
 		}
 
 		// Set status based on time-weighted utilization
@@ -657,5 +696,283 @@ func (h *proxyHandler) replaceUsageHeaders(hdr http.Header) {
 			status = "exceeded"
 		}
 		hdr.Set("anthropic-ratelimit-unified-status", status)
+		hdr.Set("anthropic-ratelimit-unified-5h-status", status)
+		hdr.Set("anthropic-ratelimit-unified-7d-status", status)
+		hdr.Set("anthropic-ratelimit-unified-primary-status", status)
 	}
+
+	hasKimiRateLimit := false
+	for key := range hdr {
+		if strings.Contains(strings.ToLower(key), "x-ratelimit") {
+			hasKimiRateLimit = true
+			break
+		}
+	}
+	if hasKimiRateLimit {
+		kimiSnap := h.pool.timeWeightedUsageByType(AccountTypeKimi)
+		if kimiSnap.RetrievedAt.IsZero() {
+			kimiSnap = h.pool.timeWeightedUsage()
+		}
+
+		reqUsed := clampRateLimitPercent(kimiSnap.PrimaryUsedPercent)
+		tokenUsed := clampRateLimitPercent(kimiSnap.SecondaryUsedPercent)
+
+		// Requests window
+		if reqLimit, ok := parseRateLimitFloat(hdr.Get("x-ratelimit-limit-requests")); ok && reqLimit > 0 {
+			reqRemaining := int64(math.Round(reqLimit * (1.0 - reqUsed)))
+			hdr.Set("x-ratelimit-remaining-requests", strconv.FormatInt(reqRemaining, 10))
+			if !kimiSnap.PrimaryResetAt.IsZero() {
+				hdr.Set("x-ratelimit-reset-requests", strconv.FormatInt(kimiSnap.PrimaryResetAt.Unix(), 10))
+			}
+		} else if reqLimit, ok := parseRateLimitFloat(hdr.Get("x-ratelimit-requests-limit")); ok && reqLimit > 0 {
+			reqRemaining := int64(math.Round(reqLimit * (1.0 - reqUsed)))
+			hdr.Set("x-ratelimit-requests-remaining", strconv.FormatInt(reqRemaining, 10))
+			if !kimiSnap.PrimaryResetAt.IsZero() {
+				hdr.Set("x-ratelimit-requests-reset", strconv.FormatInt(kimiSnap.PrimaryResetAt.Unix(), 10))
+			}
+		}
+
+		// Token window
+		if tokenLimit, ok := parseRateLimitFloat(hdr.Get("x-ratelimit-limit-tokens")); ok && tokenLimit > 0 {
+			tokenRemaining := int64(math.Round(tokenLimit * (1.0 - tokenUsed)))
+			hdr.Set("x-ratelimit-remaining-tokens", strconv.FormatInt(tokenRemaining, 10))
+			if !kimiSnap.SecondaryResetAt.IsZero() {
+				hdr.Set("x-ratelimit-reset-tokens", strconv.FormatInt(kimiSnap.SecondaryResetAt.Unix(), 10))
+			}
+		} else if tokenLimit, ok := parseRateLimitFloat(hdr.Get("x-ratelimit-tokens-limit")); ok && tokenLimit > 0 {
+			tokenRemaining := int64(math.Round(tokenLimit * (1.0 - tokenUsed)))
+			hdr.Set("x-ratelimit-tokens-remaining", strconv.FormatInt(tokenRemaining, 10))
+			if !kimiSnap.SecondaryResetAt.IsZero() {
+				hdr.Set("x-ratelimit-tokens-reset", strconv.FormatInt(kimiSnap.SecondaryResetAt.Unix(), 10))
+			}
+		}
+	}
+}
+
+// fetchKimiUsage fetches usage data from Kimi's /v1/usages endpoint.
+func (h *proxyHandler) fetchKimiUsage(now time.Time, a *Account) error {
+	a.mu.Lock()
+	access := a.AccessToken
+	a.mu.Unlock()
+
+	usageURL := h.cfg.kimiBase.String() + "/v1/usages"
+	req, _ := http.NewRequest(http.MethodGet, usageURL, nil)
+	req.Header.Set("Authorization", "Bearer "+access)
+
+	resp, err := h.transport.RoundTrip(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		a.mu.Lock()
+		a.Dead = true
+		a.Penalty += 100.0
+		a.mu.Unlock()
+		log.Printf("marking kimi account %s as dead: usage returned %d", a.ID, resp.StatusCode)
+		if err := saveAccount(a); err != nil {
+			log.Printf("warning: failed to save dead kimi account %s: %v", a.ID, err)
+		}
+		return fmt.Errorf("kimi usage unauthorized: %s", resp.Status)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("kimi usage bad status: %s", resp.Status)
+	}
+
+	var payload struct {
+		Usage struct {
+			Used      any    `json:"used"`
+			Limit     any    `json:"limit"`
+			Remaining any    `json:"remaining"`
+			ResetAt   string `json:"reset_at"`
+		} `json:"usage"`
+		Limits []struct {
+			Detail map[string]any `json:"detail"`
+			Window struct {
+				Duration int    `json:"duration"`
+				TimeUnit string `json:"timeUnit"`
+			} `json:"window"`
+		} `json:"limits"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return err
+	}
+
+	snap := UsageSnapshot{
+		RetrievedAt: now,
+		Source:      "kimi-api",
+	}
+
+	// Primary usage: overall used/limit
+	if limit, ok := readFloat(payload.Usage.Limit); ok && limit > 0 {
+		if used, ok := readFloat(payload.Usage.Used); ok {
+			snap.PrimaryUsedPercent = used / limit
+		} else if remaining, ok := readFloat(payload.Usage.Remaining); ok {
+			snap.PrimaryUsedPercent = clampRateLimitPercent((limit - remaining) / limit)
+		}
+		snap.PrimaryUsed = snap.PrimaryUsedPercent
+		snap.PrimaryUsedPercent = clampRateLimitPercent(snap.PrimaryUsedPercent)
+		snap.PrimaryUsed = clampRateLimitPercent(snap.PrimaryUsed)
+	}
+
+	// Parse reset time
+	if payload.Usage.ResetAt != "" {
+		if t, err := time.Parse(time.RFC3339, payload.Usage.ResetAt); err == nil {
+			snap.PrimaryResetAt = t
+		}
+	}
+
+	// Find DAY-window limit for secondary usage
+	for _, lim := range payload.Limits {
+		if strings.EqualFold(lim.Window.TimeUnit, "DAY") {
+			if detail := lim.Detail; detail != nil {
+				if used, ok := readFloatFromMap(detail, "used"); ok {
+					if limit, ok := readFloatFromMap(detail, "limit"); ok && limit > 0 {
+						snap.SecondaryUsedPercent = used / limit
+						snap.SecondaryUsed = snap.SecondaryUsedPercent
+					}
+				}
+			}
+			break
+		}
+	}
+
+	log.Printf("kimi usage fetch %s: primary=%.1f%% secondary=%.1f%%",
+		a.ID,
+		snap.PrimaryUsedPercent*100,
+		snap.SecondaryUsedPercent*100)
+
+	a.mu.Lock()
+	a.Usage = mergeUsage(a.Usage, snap)
+	a.mu.Unlock()
+	return nil
+}
+
+// seedMinimaxUsage sends a minimal request to capture initial rate limit headers.
+func (h *proxyHandler) seedMinimaxUsage(now time.Time, a *Account) error {
+	a.mu.Lock()
+	access := a.AccessToken
+	a.mu.Unlock()
+
+	seedURL := h.cfg.minimaxBase.String() + "/v1/messages"
+	body := []byte(`{"model":"MiniMax-M2.5","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`)
+
+	req, _ := http.NewRequest(http.MethodPost, seedURL, bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+access)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("anthropic-version", "2023-06-01")
+
+	resp, err := h.transport.RoundTrip(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		a.mu.Lock()
+		a.Dead = true
+		a.Penalty += 100.0
+		a.mu.Unlock()
+		log.Printf("marking minimax account %s as dead: seed returned %d", a.ID, resp.StatusCode)
+		if err := saveAccount(a); err != nil {
+			log.Printf("warning: failed to save dead minimax account %s: %v", a.ID, err)
+		}
+		return fmt.Errorf("minimax seed unauthorized: %s", resp.Status)
+	}
+
+	// Parse rate limit headers from the response
+	applyMinimaxRateLimits(a, resp.Header, now)
+
+	return nil
+}
+
+// applyMinimaxRateLimits extracts rate limit data from MiniMax response headers and updates the account.
+func applyMinimaxRateLimits(a *Account, headers http.Header, now time.Time) {
+	remaining := headers.Get("x-ratelimit-remaining")
+	limit := headers.Get("x-ratelimit-limit")
+	if remaining == "" && limit == "" {
+		// Try anthropic-style headers
+		remaining = headers.Get("anthropic-ratelimit-requests-remaining")
+		limit = headers.Get("anthropic-ratelimit-requests-limit")
+	}
+
+	if remaining == "" || limit == "" {
+		return
+	}
+
+	remainingVal, err1 := strconv.ParseFloat(remaining, 64)
+	limitVal, err2 := strconv.ParseFloat(limit, 64)
+	if err1 != nil || err2 != nil || limitVal <= 0 {
+		return
+	}
+
+	usedPercent := (limitVal - remainingVal) / limitVal
+
+	// Try token-based limits too
+	tokenRemaining := headers.Get("anthropic-ratelimit-tokens-remaining")
+	tokenLimit := headers.Get("anthropic-ratelimit-tokens-limit")
+	var tokenUsedPercent float64
+	if tokenRemaining != "" && tokenLimit != "" {
+		tRemain, err1 := strconv.ParseFloat(tokenRemaining, 64)
+		tLimit, err2 := strconv.ParseFloat(tokenLimit, 64)
+		if err1 == nil && err2 == nil && tLimit > 0 {
+			tokenUsedPercent = (tLimit - tRemain) / tLimit
+		}
+	}
+
+	snap := UsageSnapshot{
+		PrimaryUsedPercent:   usedPercent,
+		PrimaryUsed:          usedPercent,
+		SecondaryUsedPercent: tokenUsedPercent,
+		SecondaryUsed:        tokenUsedPercent,
+		RetrievedAt:          now,
+		Source:               "headers",
+	}
+
+	// Parse reset time
+	resetStr := headers.Get("anthropic-ratelimit-requests-reset")
+	if resetStr == "" {
+		resetStr = headers.Get("x-ratelimit-reset")
+	}
+	if resetStr != "" {
+		if t, err := time.Parse(time.RFC3339, resetStr); err == nil {
+			snap.PrimaryResetAt = t
+		}
+	}
+
+	a.mu.Lock()
+	a.Usage = mergeUsage(a.Usage, snap)
+	a.mu.Unlock()
+}
+
+// readFloat reads a float64 from a map with a string key.
+func readFloatFromMap(m map[string]any, key string) (float64, bool) {
+	v, ok := m[key]
+	if !ok {
+		return 0, false
+	}
+	return readFloat(v)
+}
+
+func readFloat(v any) (float64, bool) {
+	switch val := v.(type) {
+	case float64:
+		return val, true
+	case int64:
+		return float64(val), true
+	case int:
+		return float64(val), true
+	case int32:
+		return float64(val), true
+	case string:
+		f, err := strconv.ParseFloat(strings.TrimSpace(val), 64)
+		return f, err == nil
+	case json.Number:
+		f, err := val.Float64()
+		return f, err == nil
+	}
+	return 0, false
 }

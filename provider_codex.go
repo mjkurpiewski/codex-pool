@@ -183,44 +183,9 @@ func (p *CodexProvider) ParseUsage(obj map[string]any) *RequestUsage {
 	return p.parseResponseUsage(obj)
 }
 
-// parseTokenCountEvent extracts usage from Codex token_count SSE events.
+// parseTokenCountEvent delegates to the shared implementation in usage.go.
 func (p *CodexProvider) parseTokenCountEvent(obj map[string]any) *RequestUsage {
-	info, ok := obj["info"].(map[string]any)
-	if !ok || info == nil {
-		return nil
-	}
-
-	var usageMap map[string]any
-	if ltu, ok := info["last_token_usage"].(map[string]any); ok {
-		usageMap = ltu
-	} else if ttu, ok := info["total_token_usage"].(map[string]any); ok {
-		usageMap = ttu
-	}
-	if usageMap == nil {
-		return nil
-	}
-
-	ru := &RequestUsage{Timestamp: time.Now()}
-	ru.InputTokens = readInt64(usageMap, "input_tokens")
-	ru.CachedInputTokens = readInt64(usageMap, "cached_input_tokens")
-	ru.OutputTokens = readInt64(usageMap, "output_tokens")
-	ru.ReasoningTokens = readInt64(usageMap, "reasoning_output_tokens")
-	ru.BillableTokens = ru.InputTokens - ru.CachedInputTokens + ru.OutputTokens
-
-	if ru.InputTokens == 0 && ru.OutputTokens == 0 {
-		return nil
-	}
-
-	if rl, ok := obj["rate_limits"].(map[string]any); ok {
-		if primary, ok := rl["primary"].(map[string]any); ok {
-			ru.PrimaryUsedPct = readFloat64(primary, "used_percent") / 100.0
-		}
-		if secondary, ok := rl["secondary"].(map[string]any); ok {
-			ru.SecondaryUsedPct = readFloat64(secondary, "used_percent") / 100.0
-		}
-	}
-
-	return ru
+	return parseTokenCountEvent(obj)
 }
 
 // parseResponseUsage extracts usage from Codex SSE response events.
@@ -260,6 +225,15 @@ func (p *CodexProvider) parseResponseUsage(obj map[string]any) *RequestUsage {
 
 	if v, ok := obj["prompt_cache_key"].(string); ok {
 		ru.PromptCacheKey = v
+	}
+
+	// Extract model from response object or top-level
+	if m, ok := obj["model"].(string); ok && m != "" {
+		ru.Model = m
+	} else if resp, ok := obj["response"].(map[string]any); ok {
+		if m, ok := resp["model"].(string); ok && m != "" {
+			ru.Model = m
+		}
 	}
 
 	return ru
@@ -371,7 +345,7 @@ func parseCodexClaims(idToken string) codexJWTClaims {
 	if err != nil {
 		return out
 	}
-	var payload map[string]interface{}
+	var payload map[string]any
 	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
 		return out
 	}
@@ -381,7 +355,7 @@ func parseCodexClaims(idToken string) codexJWTClaims {
 	if acc, ok := payload["chatgpt_account_id"].(string); ok {
 		out.ChatGPTAccountID = acc
 	}
-	if auth, ok := payload["https://api.openai.com/auth"].(map[string]interface{}); ok {
+	if auth, ok := payload["https://api.openai.com/auth"].(map[string]any); ok {
 		if acc, ok := auth["chatgpt_account_id"].(string); ok && acc != "" {
 			out.ChatGPTAccountID = acc
 		}

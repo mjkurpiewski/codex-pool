@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -186,6 +187,73 @@ func ClaudeRefresh(refreshToken string) (*ClaudeTokenResponse, error) {
 	return &result, nil
 }
 
+// ClaudeProfileInfo contains the plan info extracted from the OAuth profile API.
+type ClaudeProfileInfo struct {
+	SubscriptionType string // "max", "pro", "team", "enterprise", or ""
+	RateLimitTier    string // e.g. "default_claude_max_20x"
+}
+
+// FetchClaudeProfile calls /api/oauth/profile to get the account's plan info.
+func FetchClaudeProfile(accessToken string) (*ClaudeProfileInfo, error) {
+	req, err := http.NewRequest(http.MethodGet, "https://api.anthropic.com/api/oauth/profile", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("anthropic-version", "2023-06-01")
+	req.Header.Set("anthropic-dangerous-direct-browser-access", "true")
+	req.Header.Set("X-App", "cli")
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("profile status=%s body=%s", resp.Status, string(body))
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, err
+	}
+
+	return extractProfileInfo(payload), nil
+}
+
+// extractProfileInfo extracts plan info from the OAuth profile response.
+// The response has: organization.organization_type ("claude_max", "claude_pro", etc.)
+// and organization.rate_limit_tier ("default_claude_max_20x", etc.)
+func extractProfileInfo(profile map[string]any) *ClaudeProfileInfo {
+	info := &ClaudeProfileInfo{}
+
+	org, _ := profile["organization"].(map[string]any)
+	if org == nil {
+		return info
+	}
+
+	orgType, _ := org["organization_type"].(string)
+	switch orgType {
+	case "claude_max":
+		info.SubscriptionType = "max"
+	case "claude_pro":
+		info.SubscriptionType = "pro"
+	case "claude_enterprise":
+		info.SubscriptionType = "enterprise"
+	case "claude_team":
+		info.SubscriptionType = "team"
+	}
+
+	info.RateLimitTier, _ = org["rate_limit_tier"].(string)
+	return info
+}
+
 // SaveClaudeAccount saves a Claude OAuth account to the pool directory.
 func SaveClaudeAccount(poolDir, accountID string, tokens *ClaudeTokenResponse) error {
 	claudeDir := filepath.Join(poolDir, "claude")
@@ -196,13 +264,24 @@ func SaveClaudeAccount(poolDir, accountID string, tokens *ClaudeTokenResponse) e
 	filename := accountID + ".json"
 	path := filepath.Join(claudeDir, filename)
 
+	oauthData := &ClaudeOAuthData{
+		AccessToken:  tokens.AccessToken,
+		RefreshToken: tokens.RefreshToken,
+		ExpiresAt:    time.Now().Add(time.Duration(tokens.ExpiresIn) * time.Second).UnixMilli(),
+		Scopes:       parseScopes(tokens.Scope),
+	}
+
+	// Fetch plan info from the profile API
+	if profile, err := FetchClaudeProfile(tokens.AccessToken); err == nil && profile != nil {
+		oauthData.SubscriptionType = profile.SubscriptionType
+		oauthData.RateLimitTier = profile.RateLimitTier
+		log.Printf("claude account %s: detected plan=%s tier=%s", accountID, profile.SubscriptionType, profile.RateLimitTier)
+	} else if err != nil {
+		log.Printf("claude account %s: failed to fetch profile: %v", accountID, err)
+	}
+
 	data := ClaudeAuthJSON{
-		ClaudeAiOauth: &ClaudeOAuthData{
-			AccessToken:  tokens.AccessToken,
-			RefreshToken: tokens.RefreshToken,
-			ExpiresAt:    time.Now().Add(time.Duration(tokens.ExpiresIn) * time.Second).UnixMilli(),
-			Scopes:       parseScopes(tokens.Scope),
-		},
+		ClaudeAiOauth: oauthData,
 	}
 
 	return atomicWriteJSON(path, data)
@@ -232,17 +311,26 @@ func saveClaudeAccount(a *Account) error {
 		"expiresAt":    a.ExpiresAt.UnixMilli(),
 	}
 
-	// Preserve existing fields like scopes, subscriptionType
+	// Preserve existing fields like scopes, and carry forward subscriptionType/rateLimitTier
 	if existing, ok := root["claudeAiOauth"].(map[string]any); ok {
 		if scopes, ok := existing["scopes"]; ok {
 			oauth["scopes"] = scopes
 		}
+		// Carry forward existing values as defaults
 		if subType, ok := existing["subscriptionType"]; ok {
 			oauth["subscriptionType"] = subType
 		}
 		if tier, ok := existing["rateLimitTier"]; ok {
 			oauth["rateLimitTier"] = tier
 		}
+	}
+
+	// Override with in-memory values if they're real (not the default "claude")
+	if a.PlanType != "" && a.PlanType != "claude" {
+		oauth["subscriptionType"] = a.PlanType
+	}
+	if a.RateLimitTier != "" {
+		oauth["rateLimitTier"] = a.RateLimitTier
 	}
 
 	root["claudeAiOauth"] = oauth
@@ -275,6 +363,21 @@ func RefreshClaudeAccountTokens(acc *Account) error {
 	acc.LastRefresh = time.Now().UTC()
 	acc.Dead = false
 	acc.mu.Unlock()
+
+	// Fetch updated plan info from the profile API
+	if profile, err := FetchClaudeProfile(acc.AccessToken); err == nil && profile != nil {
+		acc.mu.Lock()
+		if profile.SubscriptionType != "" {
+			acc.PlanType = profile.SubscriptionType
+		}
+		if profile.RateLimitTier != "" {
+			acc.RateLimitTier = profile.RateLimitTier
+		}
+		acc.mu.Unlock()
+		log.Printf("claude account %s: refreshed plan=%s tier=%s", acc.ID, profile.SubscriptionType, profile.RateLimitTier)
+	} else if err != nil {
+		log.Printf("claude account %s: failed to fetch profile on refresh: %v", acc.ID, err)
+	}
 
 	return saveClaudeAccount(acc)
 }

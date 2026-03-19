@@ -731,6 +731,11 @@
                         <svg viewBox="0 0 24 24"><path d="M12,2 L14.5,9.5 L22,12 L14.5,14.5 L12,22 L9.5,14.5 L2,12 L9.5,9.5 L12,2 M6,12 L8,18 L14,12 L8,6 L6,12" fill="currentColor"/></svg>
                         Gemini
                     </div>
+                    <div class="tab" data-tab="openai">
+                        <!-- OpenAI-Compatible Icon (plug/connector) -->
+                        <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 3c1.66 0 3 1.34 3 3s-1.34 3-3 3-3-1.34-3-3 1.34-3 3-3zm0 14.2c-2.5 0-4.71-1.28-6-3.22.03-1.99 4-3.08 6-3.08 1.99 0 5.97 1.09 6 3.08-1.29 1.94-3.5 3.22-6 3.22z" fill="currentColor"/></svg>
+                        OpenAI API
+                    </div>
                     <div class="tab" data-tab="stats">
                         <!-- Stats Icon -->
                         <svg viewBox="0 0 24 24"><path d="M3 3v18h18v-2H5V3H3zm4 12h2v4H7v-4zm4-6h2v10h-2V9zm4-4h2v14h-2V5zm4 8h2v6h-2v-6z" fill="currentColor"/></svg>
@@ -996,6 +1001,79 @@ brew install claude-code</pre>
                     </div>
                 </div>
 
+                <!-- OPENAI-COMPATIBLE -->
+                <div id="tab-openai" class="tab-content">
+                    <div class="install-section">
+                        <div class="section-header">
+                            <svg viewBox="0 0 24 24"><path d="M13 10V3L4 14h7v7l9-11h-7z" fill="currentColor"/></svg>
+                            OpenAI-Compatible API
+                        </div>
+                        <p style="color: #999; font-size: 0.8rem; margin-bottom: 15px;">
+                            Use this pool with any OpenAI-compatible client: Cursor, Continue, Aider, LiteLLM, or custom scripts.
+                            Requests are automatically translated between formats, so you can access Claude models through the OpenAI API.
+                        </p>
+                    </div>
+
+                    <div class="step-label">01 // Environment Variables</div>
+                    <p style="color: #666; font-size: 0.8rem; margin-bottom: 10px;">Set these in your shell or tool config. Any client that reads <code>OPENAI_API_KEY</code> and <code>OPENAI_BASE_URL</code> will work.</p>
+                    <p style="color: #666; font-size: 0.75rem; margin: 0 0 8px 0; text-transform: uppercase; letter-spacing: 0.1em;">
+                        macOS / Linux (bash/zsh)
+                    </p>
+                    <div class="code-wrapper">
+                        <button class="copy-btn" onclick="copyToClipboard('openai-env-unix', this)">Copy</button>
+                        <div class="code-block">
+                            <pre id="openai-env-unix"></pre>
+                        </div>
+                    </div>
+                    <p style="color: #666; font-size: 0.75rem; margin: 16px 0 8px 0; text-transform: uppercase; letter-spacing: 0.1em;">
+                        Windows (PowerShell)
+                    </p>
+                    <div class="code-wrapper">
+                        <button class="copy-btn" onclick="copyToClipboard('openai-env-windows', this)">Copy</button>
+                        <div class="code-block">
+                            <pre id="openai-env-windows"></pre>
+                        </div>
+                    </div>
+
+                    <div class="step-label">02 // Python Example</div>
+                    <p style="color: #666; font-size: 0.8rem; margin-bottom: 10px;">Works with the official <code>openai</code> Python package.</p>
+                    <div class="code-wrapper">
+                        <button class="copy-btn" onclick="copyToClipboard('openai-python-example', this)">Copy</button>
+                        <div class="code-block">
+                            <pre id="openai-python-example"></pre>
+                        </div>
+                    </div>
+
+                    <div class="step-label">03 // curl Example</div>
+                    <div class="code-wrapper">
+                        <button class="copy-btn" onclick="copyToClipboard('openai-curl-example', this)">Copy</button>
+                        <div class="code-block">
+                            <pre id="openai-curl-example"></pre>
+                        </div>
+                    </div>
+
+                    <div class="step-label">04 // Available Models</div>
+                    <p style="color: #666; font-size: 0.8rem; margin-bottom: 10px;">Use any model name. Requests are auto-routed to the right provider and translated if needed.</p>
+                    <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px;">
+                        <span style="background: rgba(139,92,246,0.1); color: #a78bfa; padding: 3px 10px; border-radius: 10px; font-size: 0.75rem; font-family: monospace;">claude-sonnet-4-5-20250514</span>
+                        <span style="background: rgba(139,92,246,0.1); color: #a78bfa; padding: 3px 10px; border-radius: 10px; font-size: 0.75rem; font-family: monospace;">claude-haiku-3-5-20241022</span>
+                        <span style="background: rgba(139,92,246,0.1); color: #a78bfa; padding: 3px 10px; border-radius: 10px; font-size: 0.75rem; font-family: monospace;">claude-opus-4-0-20250514</span>
+                    </div>
+                    <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px;">
+                        <span style="background: rgba(16,185,129,0.1); color: #34d399; padding: 3px 10px; border-radius: 10px; font-size: 0.75rem; font-family: monospace;">gpt-5.4-codex</span>
+                        <span style="background: rgba(16,185,129,0.1); color: #34d399; padding: 3px 10px; border-radius: 10px; font-size: 0.75rem; font-family: monospace;">o3</span>
+                        <span style="background: rgba(16,185,129,0.1); color: #34d399; padding: 3px 10px; border-radius: 10px; font-size: 0.75rem; font-family: monospace;">codex-mini-latest</span>
+                    </div>
+                    <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 20px;">
+                        <span style="background: rgba(59,130,246,0.1); color: #60a5fa; padding: 3px 10px; border-radius: 10px; font-size: 0.75rem; font-family: monospace;">kimi</span>
+                        <span style="background: rgba(245,158,11,0.1); color: #fbbf24; padding: 3px 10px; border-radius: 10px; font-size: 0.75rem; font-family: monospace;">minimax</span>
+                    </div>
+                    <p style="color: #888; font-size: 0.75rem; font-style: italic;">
+                        Claude models sent to /v1/chat/completions are auto-translated to the Anthropic Messages API and back.
+                        OpenAI models sent to /v1/messages are auto-translated to the Chat Completions API and back.
+                    </p>
+                </div>
+
                 <!-- STATS -->
                 <div id="tab-stats" class="tab-content">
                     <div class="section-header">
@@ -1021,7 +1099,13 @@ brew install claude-code</pre>
                                 <div class="stat-label">Pool Users</div>
                             </div>
                         </div>
-                        <!-- Provider breakdown badges -->
+                        <!-- Cost ROI Banner -->
+                        <div id="cost-banner" style="display: none; background: linear-gradient(135deg, rgba(212,175,55,0.08), rgba(139,92,246,0.08)); border: 1px solid rgba(212,175,55,0.2); border-radius: 8px; padding: 16px 20px; margin-bottom: 15px; text-align: center;">
+                            <div style="font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px;">Pool ROI</div>
+                            <div id="cost-banner-text" style="font-family: 'Space Mono', monospace; font-size: 1.1rem; color: var(--text-main);">-</div>
+                        </div>
+
+                        <!-- Provider breakdown badges (with cost info) -->
                         <div id="provider-breakdown" style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 30px; justify-content: center;"></div>
 
                         <!-- Token Usage Summary -->
@@ -1073,15 +1157,19 @@ brew install claude-code</pre>
                             <div id="chart-legend" style="display: flex; gap: 15px; margin-top: 10px; flex-wrap: wrap; font-size: 0.7rem;"></div>
                         </div>
 
+                        <!-- Daily Cost Chart -->
+                        <div id="cost-chart-section" style="display: none;">
+                            <div class="step-label">Daily API Cost (30 days)</div>
+                            <div style="background: #0c0c0c; padding: 15px; border-radius: 6px; border: 1px solid #1a1a1a; margin-bottom: 30px;">
+                                <div id="cost-chart" style="height: 120px; display: flex; align-items: flex-end; gap: 2px;">
+                                    <div style="color: var(--text-muted); font-style: italic;">No cost data yet</div>
+                                </div>
+                                <div id="cost-chart-legend" style="display: flex; gap: 15px; margin-top: 10px; flex-wrap: wrap; font-size: 0.7rem;"></div>
+                            </div>
+                        </div>
+
                         <!-- Codex Accounts -->
                         <div class="step-label">Codex Accounts</div>
-                        <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px;">
-                            <span style="background: rgba(212,175,55,0.1); color: var(--gold-dim); padding: 3px 10px; border-radius: 10px; font-size: 0.7rem; font-family: monospace;">o3</span>
-                            <span style="background: rgba(212,175,55,0.1); color: var(--gold-dim); padding: 3px 10px; border-radius: 10px; font-size: 0.7rem; font-family: monospace;">o4-mini</span>
-                            <span style="background: rgba(212,175,55,0.1); color: var(--gold-dim); padding: 3px 10px; border-radius: 10px; font-size: 0.7rem; font-family: monospace;">gpt-4.1</span>
-                            <span style="background: rgba(212,175,55,0.1); color: var(--gold-dim); padding: 3px 10px; border-radius: 10px; font-size: 0.7rem; font-family: monospace;">codex-spark</span>
-                            <span style="background: rgba(212,175,55,0.06); color: #666; padding: 3px 10px; border-radius: 10px; font-size: 0.7rem; font-family: monospace;">+ all OpenAI models</span>
-                        </div>
                         <div class="table-container">
                             <div style="overflow-x: auto;">
                                 <table id="accounts-table">
@@ -1094,6 +1182,9 @@ brew install claude-code</pre>
                                             <th style="text-align: right;">5hr</th>
                                             <th style="text-align: right;">Week</th>
                                             <th style="text-align: right;">Tokens</th>
+                                            <th style="text-align: right;">Sub</th>
+                                            <th style="text-align: right;">API $</th>
+                                            <th style="text-align: right;">ROI</th>
                                         </tr>
                                     </thead>
                                     <tbody id="accounts-tbody"></tbody>
@@ -1153,6 +1244,9 @@ brew install claude-code</pre>
                                                     <th style="text-align: right;">Score</th>
                                                     <th style="text-align: right;">5hr</th>
                                                     <th style="text-align: right;">7day</th>
+                                                    <th style="text-align: right;">Sub</th>
+                                                    <th style="text-align: right;">API $</th>
+                                                    <th style="text-align: right;">ROI</th>
                                                 </tr>
                                             </thead>
                                             <tbody id="claude-tbody"></tbody>
@@ -1231,6 +1325,14 @@ brew install claude-code</pre>
                                     <div id="kimi-accounts-list"></div>
                                 </div>
                             </div>
+                            <!-- Add Kimi API Key -->
+                            <div style="background: #0c0c0c; padding: 15px; border-radius: 6px; border: 1px solid #1a1a1a; margin-top: 12px;">
+                                <div style="display: flex; gap: 10px; align-items: center;">
+                                    <input type="password" id="kimi-api-key" placeholder="sk-..." style="flex: 1; font-size: 0.8rem;">
+                                    <button class="btn" onclick="addKimiKey()" style="white-space: nowrap; padding: 8px 16px;">Add Key</button>
+                                </div>
+                                <div id="kimi-add-status" style="margin-top: 8px;"></div>
+                            </div>
                         </div>
 
                         <!-- MINIMAX SECTION -->
@@ -1245,6 +1347,14 @@ brew install claude-code</pre>
                                 <div style="background: #0c0c0c; padding: 15px; border-radius: 6px; border: 1px solid #1a1a1a;">
                                     <div id="minimax-accounts-list"></div>
                                 </div>
+                            </div>
+                            <!-- Add MiniMax API Key -->
+                            <div style="background: #0c0c0c; padding: 15px; border-radius: 6px; border: 1px solid #1a1a1a; margin-top: 12px;">
+                                <div style="display: flex; gap: 10px; align-items: center;">
+                                    <input type="password" id="minimax-api-key" placeholder="API key..." style="flex: 1; font-size: 0.8rem;">
+                                    <button class="btn" onclick="addMinimaxKey()" style="white-space: nowrap; padding: 8px 16px;">Add Key</button>
+                                </div>
+                                <div id="minimax-add-status" style="margin-top: 8px;"></div>
                             </div>
                         </div>
 
@@ -1299,6 +1409,9 @@ brew install claude-code</pre>
                 document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
                 tab.classList.add('active');
                 document.getElementById('tab-' + tab.getAttribute('data-tab')).classList.add('active');
+                if (tab.getAttribute('data-tab') === 'stats') {
+                    loadStats();
+                }
             });
         });
 
@@ -1336,7 +1449,36 @@ brew install claude-code</pre>
                 headers.set('X-Friend-Code', window.friendCode);
             }
             opts.headers = headers;
+            if (!opts.cache) {
+                opts.cache = 'no-store';
+            }
             return fetch(url, opts);
+        }
+
+        let statsRefreshTimer = null;
+        let statsLoadPromise = null;
+
+        function isActiveStatus(status) {
+            return status === 'healthy' || status === 'degraded';
+        }
+
+        function statusColor(status) {
+            if (status === 'healthy') return '#27ae60';
+            if (status === 'degraded') return '#f39c12';
+            if (status === 'cooldown') return '#a78bfa';
+            return '#c0392b';
+        }
+
+        function ensureStatsRefresh() {
+            if (statsRefreshTimer) {
+                return;
+            }
+            statsRefreshTimer = setInterval(() => {
+                const successVisible = document.getElementById('success-section').classList.contains('visible');
+                if (successVisible) {
+                    loadStats();
+                }
+            }, 30000);
         }
 
         // Check for saved friend code on page load
@@ -1482,10 +1624,44 @@ $env:CLAUDE_CODE_OAUTH_TOKEN = "${claudeApiKey}"`;
                 document.getElementById('claude-env-windows').textContent = `# Run the one-liner above to configure automatically`;
             }
 
+            // Populate OpenAI-Compatible
+            const openaiKey = claudeApiKey || '';
+            if (openaiKey) {
+                document.getElementById('openai-env-unix').textContent = `export OPENAI_API_KEY="${openaiKey}"
+export OPENAI_BASE_URL="${publicUrl}/v1"`;
+                document.getElementById('openai-env-windows').textContent = `$env:OPENAI_API_KEY = "${openaiKey}"
+$env:OPENAI_BASE_URL = "${publicUrl}/v1"`;
+                document.getElementById('openai-python-example').textContent = `from openai import OpenAI
+
+client = OpenAI(
+    api_key="${openaiKey}",
+    base_url="${publicUrl}/v1",
+)
+
+response = client.chat.completions.create(
+    model="gpt-5.4-codex",  # or claude-sonnet-4-5-20250514, kimi, etc.
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+print(response.choices[0].message.content)`;
+                document.getElementById('openai-curl-example').textContent = `curl ${publicUrl}/v1/chat/completions \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer ${openaiKey}" \\
+  -d '{
+    "model": "gpt-5.4-codex",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'`;
+            } else {
+                document.getElementById('openai-env-unix').textContent = `# Log in first to get your API key`;
+                document.getElementById('openai-env-windows').textContent = `# Log in first to get your API key`;
+                document.getElementById('openai-python-example').textContent = `# Log in first to get your API key`;
+                document.getElementById('openai-curl-example').textContent = `# Log in first to get your API key`;
+            }
+
             // Show success state
             loginSec.style.display = 'none';
             heroWrapper.style.display = 'none';
             successSec.classList.add('visible');
+            ensureStatsRefresh();
             loadStats();
         }
 
@@ -1619,6 +1795,34 @@ export CLAUDE_CODE_OAUTH_TOKEN="${claudeApiKey}"`;
                 document.getElementById('claude-env-windows').textContent = `$env:ANTHROPIC_BASE_URL = "${result.public_url}"
 $env:CLAUDE_CODE_OAUTH_TOKEN = "${claudeApiKey}"`;
 
+                // Populate OpenAI-Compatible
+                const openaiKey2 = claudeApiKey || '';
+                if (openaiKey2) {
+                    document.getElementById('openai-env-unix').textContent = `export OPENAI_API_KEY="${openaiKey2}"
+export OPENAI_BASE_URL="${result.public_url}/v1"`;
+                    document.getElementById('openai-env-windows').textContent = `$env:OPENAI_API_KEY = "${openaiKey2}"
+$env:OPENAI_BASE_URL = "${result.public_url}/v1"`;
+                    document.getElementById('openai-python-example').textContent = `from openai import OpenAI
+
+client = OpenAI(
+    api_key="${openaiKey2}",
+    base_url="${result.public_url}/v1",
+)
+
+response = client.chat.completions.create(
+    model="gpt-5.4-codex",  # or claude-sonnet-4-5-20250514, kimi, etc.
+    messages=[{"role": "user", "content": "Hello!"}],
+)
+print(response.choices[0].message.content)`;
+                    document.getElementById('openai-curl-example').textContent = `curl ${result.public_url}/v1/chat/completions \\
+  -H "Content-Type: application/json" \\
+  -H "Authorization: Bearer ${openaiKey2}" \\
+  -d '{
+    "model": "gpt-5.4-codex",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'`;
+                }
+
                 // Transition with animation
                 loginSec.style.opacity = '0';
                 heroWrapper.style.opacity = '0';
@@ -1627,6 +1831,7 @@ $env:CLAUDE_CODE_OAUTH_TOKEN = "${claudeApiKey}"`;
                     loginSec.style.display = 'none';
                     heroWrapper.style.display = 'none';
                     successSec.classList.add('visible');
+                    ensureStatsRefresh();
                     loadStats();
                 }, 500);
 
@@ -1639,6 +1844,11 @@ $env:CLAUDE_CODE_OAUTH_TOKEN = "${claudeApiKey}"`;
         });
 
         async function loadStats() {
+            if (statsLoadPromise) {
+                return statsLoadPromise;
+            }
+
+            statsLoadPromise = (async () => {
             try {
                 const response = await poolFetch('/api/pool/stats');
                 if (!response.ok) throw new Error('Failed to load stats');
@@ -1649,11 +1859,13 @@ $env:CLAUDE_CODE_OAUTH_TOKEN = "${claudeApiKey}"`;
 
                 // All accounts across all providers
                 const allAccounts = stats.accounts || [];
-                const activeAll = allAccounts.filter(a => a.status === 'healthy').length;
+                const activeAll = allAccounts.filter(a => isActiveStatus(a.status)).length;
 
                 document.getElementById('stat-total-accounts').textContent = allAccounts.length;
                 document.getElementById('stat-active-accounts').textContent = activeAll;
                 document.getElementById('stat-pool-users').textContent = stats.total_pool_users;
+
+                const agg = stats.aggregate || {};
 
                 // Provider breakdown badges
                 const providerCounts = {};
@@ -1668,19 +1880,42 @@ $env:CLAUDE_CODE_OAUTH_TOKEN = "${claudeApiKey}"`;
                 const breakdownEl = document.getElementById('provider-breakdown');
                 breakdownEl.innerHTML = '';
                 const providerOrder = ['codex', 'claude', 'gemini', 'kimi', 'minimax'];
+                const costByProvider = (agg.cost_by_provider) || {};
                 providerOrder.forEach(type => {
                     const count = providerCounts[type];
                     if (!count) return;
-                    const healthy = allAccounts.filter(a => a.type === type && a.status === 'healthy').length;
+                    const healthy = allAccounts.filter(a => a.type === type && isActiveStatus(a.status)).length;
                     const colors = providerColors[type] || { bg: 'rgba(128,128,128,0.15)', fg: '#888' };
-                    breakdownEl.innerHTML += `<span style="background: ${colors.bg}; color: ${colors.fg}; padding: 4px 14px; border-radius: 12px; font-size: 0.8rem; font-family: 'Space Mono', monospace;">${type} <span style="font-weight: bold;">${healthy}</span><span style="opacity: 0.5;">/${count}</span></span>`;
+                    const pCost = costByProvider[type];
+                    const costInfo = pCost && pCost.api_cost > 0
+                        ? `<br><span style="font-size: 0.65rem; opacity: 0.7;">$${pCost.subscription_cost}/mo → ${formatCost(pCost.api_cost)} API${pCost.roi > 0 ? ' → ' + pCost.roi.toFixed(1) + 'x' : ''}</span>`
+                        : '';
+                    breakdownEl.innerHTML += `<span style="background: ${colors.bg}; color: ${colors.fg}; padding: 4px 14px; border-radius: 12px; font-size: 0.8rem; font-family: 'Space Mono', monospace; text-align: center; line-height: 1.6;">${type} <span style="font-weight: bold;">${healthy}</span><span style="opacity: 0.5;">/${count}</span>${costInfo}</span>`;
                 });
+
+                // Cost ROI banner
+                if (agg.total_api_cost > 0 || agg.total_subscription_cost > 0) {
+                    const banner = document.getElementById('cost-banner');
+                    banner.style.display = 'block';
+                    const subCost = agg.total_subscription_cost || 0;
+                    const apiCost = agg.total_api_cost || 0;
+                    const roi = agg.overall_roi || 0;
+                    const roiStr = roi > 0 ? ` → <span style="color: ${roiColor(roi)}; font-weight: bold;">${roi.toFixed(1)}x ROI</span>` : '';
+                    document.getElementById('cost-banner-text').innerHTML =
+                        `<span style="color: #888;">$${subCost.toFixed(0)}/mo subscription</span> → <span style="color: var(--success-green);">${formatCost(apiCost)} API value</span>${roiStr}`;
+                }
+
+                // Daily cost chart
+                const dailyCosts = stats.daily_costs || [];
+                if (dailyCosts.length > 0) {
+                    document.getElementById('cost-chart-section').style.display = 'block';
+                    renderCostChart(dailyCosts);
+                }
 
                 // Codex accounts for rate limit calculations
                 const codexAccounts = allAccounts.filter(a => a.type === 'codex');
 
                 // Token usage stats
-                const agg = stats.aggregate || {};
                 document.getElementById('stat-input-tokens').textContent = formatNumber(agg.total_input_tokens || 0);
                 document.getElementById('stat-output-tokens').textContent = formatNumber(agg.total_output_tokens || 0);
                 document.getElementById('stat-cached-tokens').textContent = formatNumber(agg.total_cached_tokens || 0);
@@ -1690,7 +1925,7 @@ $env:CLAUDE_CODE_OAUTH_TOKEN = "${claudeApiKey}"`;
                 let primarySum = 0, primaryCount = 0;
                 let secondarySum = 0, secondaryCount = 0;
                 for (const acc of codexAccounts) {
-                    if (acc.status !== 'dead') {
+                    if (isActiveStatus(acc.status)) {
                         if (acc.primary_window_used_pct > 0) { primarySum += acc.primary_window_used_pct; primaryCount++; }
                         if (acc.secondary_window_used_pct > 0) { secondarySum += acc.secondary_window_used_pct; secondaryCount++; }
                     }
@@ -1716,7 +1951,7 @@ $env:CLAUDE_CODE_OAUTH_TOKEN = "${claudeApiKey}"`;
                 const tbody = document.getElementById('accounts-tbody');
                 tbody.innerHTML = '';
                 for (const acc of codexAccounts) {
-                    const statusColor = acc.status === 'healthy' ? '#27ae60' : (acc.status === 'degraded' ? '#f39c12' : '#c0392b');
+                    const rowStatusColor = statusColor(acc.status);
                     const pri5hrReset = acc.primary_reset_minutes > 0 ? formatDuration(acc.primary_reset_minutes) : '-';
                     const weekReset = acc.secondary_reset_minutes > 0 ? formatDuration(acc.secondary_reset_minutes) : '-';
                     const tokens = acc.total_billable_tokens > 0 ? formatNumber(acc.total_billable_tokens) : '0';
@@ -1732,11 +1967,14 @@ $env:CLAUDE_CODE_OAUTH_TOKEN = "${claudeApiKey}"`;
                     row.innerHTML = `
                         <td style="font-family: monospace; color: #888;">${acc.id}${primaryBadge}</td>
                         <td style="text-transform: uppercase; color: #aaa;">${acc.plan_type}</td>
-                        <td style="color: ${statusColor}; text-transform: uppercase; font-weight: bold; font-size: 0.7rem;">${acc.status}</td>
+                        <td style="color: ${rowStatusColor}; text-transform: uppercase; font-weight: bold; font-size: 0.7rem;">${acc.status}</td>
                         <td style="text-align: right; font-family: monospace; color: ${scoreColor}; font-weight: ${acc.is_primary ? 'bold' : 'normal'};">${scoreDisplay}</td>
                         <td style="text-align: right; font-family: monospace; color: ${priColor};">${formatPct(acc.primary_window_used_pct)} <span style="color: var(--text-muted); font-size: 0.7rem;">${pri5hrReset}</span></td>
                         <td style="text-align: right; font-family: monospace; color: ${weekColor};">${formatPct(acc.secondary_window_used_pct)} <span style="color: var(--text-muted); font-size: 0.7rem;">${weekReset}</span></td>
                         <td style="text-align: right; font-family: monospace; color: var(--gold-dim);">${tokens}</td>
+                        <td style="text-align: right; font-family: monospace; color: #888; font-size: 0.8rem;">$${acc.subscription_cost_monthly || 0}</td>
+                        <td style="text-align: right; font-family: monospace; color: var(--success-green); font-size: 0.8rem;">${formatCost(acc.api_cost_estimate)}</td>
+                        <td style="text-align: right; font-family: monospace; color: ${roiColor(acc.roi)}; font-size: 0.8rem;">${formatROI(acc.roi)}</td>
                     `;
                     tbody.appendChild(row);
                 }
@@ -1750,7 +1988,7 @@ $env:CLAUDE_CODE_OAUTH_TOKEN = "${claudeApiKey}"`;
                     // Calculate average usage for Claude
                     let claude5hrSum = 0, claude7daySum = 0, claudeHealthy = 0;
                     claudeAccounts.forEach(acc => {
-                        if (acc.status === 'healthy') {
+                        if (isActiveStatus(acc.status)) {
                             claude5hrSum += acc.primary_window_used_pct;
                             claude7daySum += acc.secondary_window_used_pct;
                             claudeHealthy++;
@@ -1763,7 +2001,7 @@ $env:CLAUDE_CODE_OAUTH_TOKEN = "${claudeApiKey}"`;
                     const claudeTbody = document.getElementById('claude-tbody');
                     claudeTbody.innerHTML = '';
                     for (const acc of claudeAccounts) {
-                        const statusColor = acc.status === 'healthy' ? '#27ae60' : (acc.status === 'degraded' ? '#f39c12' : '#c0392b');
+                        const rowStatusColor = statusColor(acc.status);
                         // Add reset time formatting (same as Codex accounts)
                         const pri5hrReset = acc.primary_reset_minutes > 0 ? formatDuration(acc.primary_reset_minutes) : '-';
                         const weekReset = acc.secondary_reset_minutes > 0 ? formatDuration(acc.secondary_reset_minutes) : '-';
@@ -1779,13 +2017,19 @@ $env:CLAUDE_CODE_OAUTH_TOKEN = "${claudeApiKey}"`;
                         row.innerHTML = `
                             <td style="font-family: monospace; color: #888;">${acc.id}${primaryBadge}</td>
                             <td style="text-transform: uppercase; color: #aaa;">${acc.plan_type || 'pro'}</td>
-                            <td style="color: ${statusColor}; text-transform: uppercase; font-weight: bold; font-size: 0.7rem;">${acc.status}</td>
+                            <td style="color: ${rowStatusColor}; text-transform: uppercase; font-weight: bold; font-size: 0.7rem;">${acc.status}</td>
                             <td style="text-align: right; font-family: monospace; color: ${scoreColor}; font-weight: ${acc.is_primary ? 'bold' : 'normal'};">${scoreDisplay}</td>
                             <td style="text-align: right; font-family: monospace;">${formatPct(acc.primary_window_used_pct)} <span style="color: var(--text-muted); font-size: 0.7rem;">${pri5hrReset}</span></td>
                             <td style="text-align: right; font-family: monospace;">${formatPct(acc.secondary_window_used_pct)} <span style="color: var(--text-muted); font-size: 0.7rem;">${weekReset}</span></td>
+                            <td style="text-align: right; font-family: monospace; color: #888; font-size: 0.8rem;">$${acc.subscription_cost_monthly || 0}</td>
+                            <td style="text-align: right; font-family: monospace; color: var(--success-green); font-size: 0.8rem;">${formatCost(acc.api_cost_estimate)}</td>
+                            <td style="text-align: right; font-family: monospace; color: ${roiColor(acc.roi)}; font-size: 0.8rem;">${formatROI(acc.roi)}</td>
                         `;
                         claudeTbody.appendChild(row);
                     }
+                } else {
+                    document.getElementById('claude-empty').style.display = 'block';
+                    document.getElementById('claude-content').style.display = 'none';
                 }
 
                 // Populate Gemini accounts
@@ -1801,16 +2045,19 @@ $env:CLAUDE_CODE_OAUTH_TOKEN = "${claudeApiKey}"`;
                     const geminiTbody = document.getElementById('gemini-tbody');
                     geminiTbody.innerHTML = '';
                     for (const acc of geminiAccounts) {
-                        const statusColor = acc.status === 'healthy' ? '#27ae60' : (acc.status === 'degraded' ? '#f39c12' : '#c0392b');
+                        const rowStatusColor = statusColor(acc.status);
                         const tokens = acc.total_billable_tokens > 0 ? formatNumber(acc.total_billable_tokens) : '0';
                         const row = document.createElement('tr');
                         row.innerHTML = `
                             <td style="font-family: monospace; color: #888;">${acc.id}</td>
-                            <td style="color: ${statusColor}; text-transform: uppercase; font-weight: bold; font-size: 0.7rem;">${acc.status}</td>
+                            <td style="color: ${rowStatusColor}; text-transform: uppercase; font-weight: bold; font-size: 0.7rem;">${acc.status}</td>
                             <td style="text-align: right; font-family: monospace; color: var(--gold-dim);">${tokens}</td>
                         `;
                         geminiTbody.appendChild(row);
                     }
+                } else {
+                    document.getElementById('gemini-empty').style.display = 'block';
+                    document.getElementById('gemini-content').style.display = 'none';
                 }
 
                 // Populate Kimi accounts
@@ -1821,15 +2068,27 @@ $env:CLAUDE_CODE_OAUTH_TOKEN = "${claudeApiKey}"`;
                     const kimiList = document.getElementById('kimi-accounts-list');
                     kimiList.innerHTML = '';
                     for (const acc of kimiAccounts) {
-                        const statusColor = acc.status === 'healthy' ? '#27ae60' : (acc.status === 'degraded' ? '#f39c12' : '#c0392b');
+                        const rowStatusColor = statusColor(acc.status);
                         const tokens = acc.total_billable_tokens > 0 ? formatNumber(acc.total_billable_tokens) : '0';
+                        const primaryPct = acc.primary_window_used_pct || 0;
+                        const usageBar = primaryPct > 0 ? `
+                            <div style="flex: 1; max-width: 120px; margin: 0 8px;">
+                                <div style="background: #1a1a1a; border-radius: 3px; height: 6px; overflow: hidden;">
+                                    <div style="background: ${primaryPct > 80 ? '#c0392b' : '#60a5fa'}; width: ${Math.min(primaryPct, 100)}%; height: 100%;"></div>
+                                </div>
+                                <div style="font-size: 0.6rem; color: #666; text-align: center; margin-top: 2px;">${primaryPct.toFixed(0)}%</div>
+                            </div>` : '';
                         kimiList.innerHTML += `
                             <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; ${kimiAccounts.indexOf(acc) < kimiAccounts.length - 1 ? 'border-bottom: 1px solid #1a1a1a;' : ''}">
                                 <span style="font-family: monospace; color: #888; font-size: 0.85rem;">${acc.id}</span>
-                                <span style="color: ${statusColor}; text-transform: uppercase; font-weight: bold; font-size: 0.7rem;">${acc.status}</span>
+                                <span style="color: ${rowStatusColor}; text-transform: uppercase; font-weight: bold; font-size: 0.7rem;">${acc.status}</span>
+                                ${usageBar}
                                 <span style="font-family: monospace; color: #60a5fa; font-size: 0.85rem;">${tokens} tokens</span>
                             </div>`;
                     }
+                } else {
+                    document.getElementById('kimi-empty').style.display = 'block';
+                    document.getElementById('kimi-content').style.display = 'none';
                 }
 
                 // Populate MiniMax accounts
@@ -1840,15 +2099,27 @@ $env:CLAUDE_CODE_OAUTH_TOKEN = "${claudeApiKey}"`;
                     const minimaxList = document.getElementById('minimax-accounts-list');
                     minimaxList.innerHTML = '';
                     for (const acc of minimaxAccounts) {
-                        const statusColor = acc.status === 'healthy' ? '#27ae60' : (acc.status === 'degraded' ? '#f39c12' : '#c0392b');
+                        const rowStatusColor = statusColor(acc.status);
                         const tokens = acc.total_billable_tokens > 0 ? formatNumber(acc.total_billable_tokens) : '0';
+                        const primaryPct = acc.primary_window_used_pct || 0;
+                        const usageBar = primaryPct > 0 ? `
+                            <div style="flex: 1; max-width: 120px; margin: 0 8px;">
+                                <div style="background: #1a1a1a; border-radius: 3px; height: 6px; overflow: hidden;">
+                                    <div style="background: ${primaryPct > 80 ? '#c0392b' : '#fbbf24'}; width: ${Math.min(primaryPct, 100)}%; height: 100%;"></div>
+                                </div>
+                                <div style="font-size: 0.6rem; color: #666; text-align: center; margin-top: 2px;">${primaryPct.toFixed(0)}%</div>
+                            </div>` : '';
                         minimaxList.innerHTML += `
                             <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; ${minimaxAccounts.indexOf(acc) < minimaxAccounts.length - 1 ? 'border-bottom: 1px solid #1a1a1a;' : ''}">
                                 <span style="font-family: monospace; color: #888; font-size: 0.85rem;">${acc.id}</span>
-                                <span style="color: ${statusColor}; text-transform: uppercase; font-weight: bold; font-size: 0.7rem;">${acc.status}</span>
+                                <span style="color: ${rowStatusColor}; text-transform: uppercase; font-weight: bold; font-size: 0.7rem;">${acc.status}</span>
+                                ${usageBar}
                                 <span style="font-family: monospace; color: #fbbf24; font-size: 0.85rem;">${tokens} tokens</span>
                             </div>`;
                     }
+                } else {
+                    document.getElementById('minimax-empty').style.display = 'block';
+                    document.getElementById('minimax-content').style.display = 'none';
                 }
 
                 // Load users data and chart (now part of stats tab)
@@ -1856,7 +2127,11 @@ $env:CLAUDE_CODE_OAUTH_TOKEN = "${claudeApiKey}"`;
                 loadDailyChart();
             } catch (err) {
                 document.getElementById('stats-loading').textContent = 'Unable to synchronize with pool statistics.';
+            } finally {
+                statsLoadPromise = null;
             }
+            })();
+            return statsLoadPromise;
         }
 
         async function loadUsers() {
@@ -1946,6 +2221,26 @@ $env:CLAUDE_CODE_OAUTH_TOKEN = "${claudeApiKey}"`;
             return `${Math.max(0, Math.min(100, pct)).toFixed(0)}%`;
         }
 
+        function formatCost(value) {
+            if (!value || value === 0) return '$0';
+            if (value >= 1000) return '$' + (value / 1000).toFixed(1) + 'K';
+            if (value >= 1) return '$' + value.toFixed(2);
+            if (value >= 0.01) return '$' + value.toFixed(2);
+            return '$' + value.toFixed(4);
+        }
+
+        function formatROI(value) {
+            if (!value || value === 0) return '-';
+            return value.toFixed(1) + 'x';
+        }
+
+        function roiColor(roi) {
+            if (!roi || roi === 0) return '#888';
+            if (roi >= 10) return '#27ae60';
+            if (roi >= 5) return '#f39c12';
+            return '#e67e22';
+        }
+
         async function loadDailyChart() {
             try {
                 const res = await poolFetch('/api/pool/daily-breakdown');
@@ -2023,6 +2318,62 @@ $env:CLAUDE_CODE_OAUTH_TOKEN = "${claudeApiKey}"`;
             } catch (err) {
                 document.getElementById('usage-chart').innerHTML = '<div style="color: var(--text-muted);">Chart unavailable</div>';
             }
+        }
+
+        function renderCostChart(dailyCosts) {
+            const chart = document.getElementById('cost-chart');
+            const legend = document.getElementById('cost-chart-legend');
+
+            // Group by date and provider
+            const byDate = {};
+            dailyCosts.forEach(e => {
+                if (!byDate[e.date]) byDate[e.date] = {};
+                byDate[e.date][e.account_type] = (byDate[e.date][e.account_type] || 0) + e.cost_usd;
+            });
+
+            const dates = Object.keys(byDate).sort().slice(-30);
+            if (dates.length === 0) return;
+
+            const maxCost = Math.max(...dates.map(d => Object.values(byDate[d]).reduce((a, b) => a + b, 0)), 0.01);
+
+            const costProviderColors = {
+                codex: '#d4af37', claude: '#a78bfa', gemini: '#34d399', kimi: '#60a5fa', minimax: '#fbbf24'
+            };
+
+            chart.innerHTML = '';
+            dates.forEach((date, i) => {
+                const bar = document.createElement('div');
+                bar.style.cssText = 'flex: 1; display: flex; flex-direction: column; justify-content: flex-end; min-width: 8px; position: relative;';
+
+                const dayData = byDate[date] || {};
+                const entries = Object.entries(dayData).sort((a, b) => b[1] - a[1]);
+                entries.forEach(([type, cost]) => {
+                    const pxHeight = Math.max(1, (cost / maxCost) * 100);
+                    const seg = document.createElement('div');
+                    seg.style.cssText = `height: ${pxHeight}px; background: ${costProviderColors[type] || '#666'}; width: 100%;`;
+                    seg.title = `${date}: ${type} $${cost.toFixed(4)}`;
+                    bar.appendChild(seg);
+                });
+
+                if (i === 0 || i === dates.length - 1 || i === Math.floor(dates.length / 2)) {
+                    const label = document.createElement('div');
+                    label.style.cssText = 'position: absolute; bottom: -18px; left: 50%; transform: translateX(-50%); font-size: 0.6rem; color: var(--text-muted); white-space: nowrap;';
+                    label.textContent = date.slice(5);
+                    bar.appendChild(label);
+                }
+                chart.appendChild(bar);
+            });
+
+            // Legend
+            const usedTypes = new Set();
+            dates.forEach(d => Object.keys(byDate[d]).forEach(t => usedTypes.add(t)));
+            legend.innerHTML = '';
+            usedTypes.forEach(type => {
+                const item = document.createElement('div');
+                item.style.cssText = 'display: flex; align-items: center; gap: 4px;';
+                item.innerHTML = `<div style="width: 10px; height: 10px; background: ${costProviderColors[type] || '#666'}; border-radius: 2px;"></div><span style="color: var(--text-muted);">${type}</span>`;
+                legend.appendChild(item);
+            });
         }
 
         // OAuth flow helpers
@@ -2246,6 +2597,70 @@ $env:CLAUDE_CODE_OAUTH_TOKEN = "${claudeApiKey}"`;
                 setTimeout(() => loadStats(), 1000);
             } catch (err) {
                 statusEl.innerHTML = `<span style="color: var(--error-red);">Error: ${err.message}</span>`;
+            }
+        }
+
+        async function addKimiKey() {
+            const input = document.getElementById('kimi-api-key');
+            const statusEl = document.getElementById('kimi-add-status');
+            const apiKey = input.value.trim();
+
+            if (!apiKey) {
+                statusEl.innerHTML = '<span style="color: var(--error-red);">Please enter an API key</span>';
+                return;
+            }
+
+            statusEl.innerHTML = '<span style="color: var(--text-muted);">Validating key...</span>';
+
+            try {
+                const response = await poolFetch('/admin/kimi/add', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ api_key: apiKey })
+                });
+
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to add key');
+                }
+
+                statusEl.innerHTML = `<span style="color: var(--success-green);">Added: ${data.account_id}</span>`;
+                input.value = '';
+                setTimeout(() => { statusEl.innerHTML = ''; loadStats(); }, 2000);
+            } catch (err) {
+                statusEl.innerHTML = `<span style="color: var(--error-red);">${err.message}</span>`;
+            }
+        }
+
+        async function addMinimaxKey() {
+            const input = document.getElementById('minimax-api-key');
+            const statusEl = document.getElementById('minimax-add-status');
+            const apiKey = input.value.trim();
+
+            if (!apiKey) {
+                statusEl.innerHTML = '<span style="color: var(--error-red);">Please enter an API key</span>';
+                return;
+            }
+
+            statusEl.innerHTML = '<span style="color: var(--text-muted);">Validating key...</span>';
+
+            try {
+                const response = await poolFetch('/admin/minimax/add', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ api_key: apiKey })
+                });
+
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to add key');
+                }
+
+                statusEl.innerHTML = `<span style="color: var(--success-green);">Added: ${data.account_id}</span>`;
+                input.value = '';
+                setTimeout(() => { statusEl.innerHTML = ''; loadStats(); }, 2000);
+            } catch (err) {
+                statusEl.innerHTML = `<span style="color: var(--error-red);">${err.message}</span>`;
             }
         }
 

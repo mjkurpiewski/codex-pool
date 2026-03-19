@@ -90,6 +90,12 @@ func (h *proxyHandler) handleFriendClaim(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	ip := getClientIP(r)
+	if h.bruteForce != nil && h.bruteForce.isBanned(ip) {
+		http.Error(w, "too many failed attempts, try again later", http.StatusTooManyRequests)
+		return
+	}
+
 	var req struct {
 		FriendCode string `json:"friend_code"`
 		Email      string `json:"user_email"`
@@ -100,8 +106,15 @@ func (h *proxyHandler) handleFriendClaim(w http.ResponseWriter, r *http.Request)
 	}
 
 	if req.FriendCode != h.cfg.friendCode {
+		if h.bruteForce != nil {
+			h.bruteForce.recordFailure(ip)
+		}
 		respondJSONError(w, http.StatusForbidden, "Invalid Friend Code")
 		return
+	}
+
+	if h.bruteForce != nil {
+		h.bruteForce.recordSuccess(ip)
 	}
 
 	// Ensure pool users system is ready
@@ -190,12 +203,6 @@ func (h *proxyHandler) handleFriendClaim(w http.ResponseWriter, r *http.Request)
 		"gemini_api_key":   geminiAPIKey,               // API key for Gemini CLI API key mode
 		"claude_api_key":   claudeAuthData.AccessToken, // JWT token to use as API key
 	})
-}
-
-func respondJSONError(w http.ResponseWriter, code int, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
 func (h *proxyHandler) getEffectivePublicURL(r *http.Request) string {
@@ -1284,6 +1291,18 @@ func hashAccountID(id string) string {
 	return hex.EncodeToString(h[:])[:12]
 }
 
+// formatPlanWithTier appends the rate limit tier suffix (e.g. "max 20x") if available.
+func formatPlanWithTier(planType, tier string) string {
+	switch tier {
+	case "default_claude_max_20x":
+		return planType + " 20x"
+	case "default_claude_max_5x":
+		return planType + " 5x"
+	default:
+		return planType
+	}
+}
+
 // PoolStats represents anonymized pool statistics
 type PoolStats struct {
 	TotalAccounts    int               `json:"total_accounts"`
@@ -1293,39 +1312,50 @@ type PoolStats struct {
 	AggregateUsage   AggregateStats    `json:"aggregate"`
 	CapacityAnalysis *CapacityAnalysis `json:"capacity_analysis,omitempty"`
 	Last24hTokens    int64             `json:"last_24h_tokens"`
+	DailyCosts       []DailyCostEntry  `json:"daily_costs,omitempty"`
 	GeneratedAt      time.Time         `json:"generated_at"`
 }
 
 type AccountStats struct {
-	ID                    string  `json:"id"` // hashed
-	Type                  string  `json:"type"`
-	PlanType              string  `json:"plan_type"`
-	Status                string  `json:"status"` // healthy, degraded, dead
-	PrimaryWindowUsed     float64 `json:"primary_window_used_pct"`
-	SecondaryWindowUsed   float64 `json:"secondary_window_used_pct"`
-	PrimaryResetMinutes   int     `json:"primary_reset_minutes"`
-	SecondaryResetMinutes int     `json:"secondary_reset_minutes"`
-	TotalInputTokens      int64   `json:"total_input_tokens"`
-	TotalCachedTokens     int64   `json:"total_cached_tokens"`
-	TotalOutputTokens     int64   `json:"total_output_tokens"`
-	TotalReasoningTokens  int64   `json:"total_reasoning_tokens"`
-	TotalBillableTokens   int64   `json:"total_billable_tokens"`
-	CacheHitRate          float64 `json:"cache_hit_rate_pct"`
-	CreditsBalance        float64 `json:"credits_balance,omitempty"`
-	HasCredits            bool    `json:"has_credits"`
-	Score                 float64 `json:"score"`
-	IsPrimary             bool    `json:"is_primary"` // highest score for this provider type
+	ID                      string  `json:"id"` // hashed
+	Type                    string  `json:"type"`
+	PlanType                string  `json:"plan_type"`
+	Status                  string  `json:"status"` // healthy, degraded, dead
+	Penalty                 float64 `json:"penalty"`
+	PrimaryWindowUsed       float64 `json:"primary_window_used_pct"`
+	SecondaryWindowUsed     float64 `json:"secondary_window_used_pct"`
+	PrimaryResetMinutes     int     `json:"primary_reset_minutes"`
+	SecondaryResetMinutes   int     `json:"secondary_reset_minutes"`
+	TotalInputTokens        int64   `json:"total_input_tokens"`
+	TotalCachedTokens       int64   `json:"total_cached_tokens"`
+	TotalOutputTokens       int64   `json:"total_output_tokens"`
+	TotalReasoningTokens    int64   `json:"total_reasoning_tokens"`
+	TotalBillableTokens     int64   `json:"total_billable_tokens"`
+	CacheHitRate            float64 `json:"cache_hit_rate_pct"`
+	CreditsBalance          float64 `json:"credits_balance,omitempty"`
+	HasCredits              bool    `json:"has_credits"`
+	Score                   float64 `json:"score"`
+	IsPrimary               bool    `json:"is_primary"` // highest score for this provider type
+	SubscriptionCostMonthly float64 `json:"subscription_cost_monthly"`
+	SubscriptionLabel       string  `json:"subscription_label"`
+	APICostEstimate         float64 `json:"api_cost_estimate"` // all-time
+	APICostLast30d          float64 `json:"api_cost_last_30d"` // last 30 days
+	ROI                     float64 `json:"roi"`               // api_cost / subscription_cost
 }
 
 type AggregateStats struct {
-	TotalInputTokens     int64   `json:"total_input_tokens"`
-	TotalCachedTokens    int64   `json:"total_cached_tokens"`
-	TotalOutputTokens    int64   `json:"total_output_tokens"`
-	TotalReasoningTokens int64   `json:"total_reasoning_tokens"`
-	TotalBillableTokens  int64   `json:"total_billable_tokens"`
-	AvgPrimaryUsed       float64 `json:"avg_primary_window_used_pct"`
-	AvgSecondaryUsed     float64 `json:"avg_secondary_window_used_pct"`
-	OverallCacheHitRate  float64 `json:"overall_cache_hit_rate_pct"`
+	TotalInputTokens      int64                          `json:"total_input_tokens"`
+	TotalCachedTokens     int64                          `json:"total_cached_tokens"`
+	TotalOutputTokens     int64                          `json:"total_output_tokens"`
+	TotalReasoningTokens  int64                          `json:"total_reasoning_tokens"`
+	TotalBillableTokens   int64                          `json:"total_billable_tokens"`
+	AvgPrimaryUsed        float64                        `json:"avg_primary_window_used_pct"`
+	AvgSecondaryUsed      float64                        `json:"avg_secondary_window_used_pct"`
+	OverallCacheHitRate   float64                        `json:"overall_cache_hit_rate_pct"`
+	TotalAPICost          float64                        `json:"total_api_cost"`
+	TotalSubscriptionCost float64                        `json:"total_subscription_cost"`
+	OverallROI            float64                        `json:"overall_roi"`
+	CostByProvider        map[string]ProviderCostSummary `json:"cost_by_provider,omitempty"`
 }
 
 // CapacityAnalysis contains token capacity estimation data for the stats API.
@@ -1348,17 +1378,6 @@ type PlanCapacityInfo struct {
 }
 
 func (h *proxyHandler) handlePoolStats(w http.ResponseWriter, r *http.Request) {
-	// Require friend code authentication via query param or header
-	friendCode := r.URL.Query().Get("code")
-	if friendCode == "" {
-		friendCode = r.Header.Get("X-Friend-Code")
-	}
-
-	if h.cfg.friendCode == "" || friendCode != h.cfg.friendCode {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
-	}
-
 	accounts := h.pool.allAccounts()
 
 	stats := PoolStats{
@@ -1378,11 +1397,14 @@ func (h *proxyHandler) handlePoolStats(w http.ResponseWriter, r *http.Request) {
 		acc.mu.Lock()
 
 		status := "healthy"
-		if acc.Dead {
+		if acc.Dead || acc.Disabled {
 			status = "dead"
-		} else if acc.Penalty > 0.5 {
+		} else if accountCoolingDownLocked(acc, stats.GeneratedAt) || accountUsageExhaustedLocked(acc) {
+			status = "cooldown"
+		} else if acc.Penalty > 2.0 {
 			status = "degraded"
-		} else {
+		}
+		if status == "healthy" || status == "degraded" {
 			activeCount++
 		}
 
@@ -1417,10 +1439,11 @@ func (h *proxyHandler) handlePoolStats(w http.ResponseWriter, r *http.Request) {
 		as := AccountStats{
 			ID:                    hashAccountID(acc.ID),
 			Type:                  accType,
-			PlanType:              acc.PlanType,
+			PlanType:              formatPlanWithTier(acc.PlanType, acc.RateLimitTier),
 			Status:                status,
-			PrimaryWindowUsed:     acc.Usage.PrimaryUsedPercent * 100,
-			SecondaryWindowUsed:   acc.Usage.SecondaryUsedPercent * 100,
+			Penalty:               acc.Penalty,
+			PrimaryWindowUsed:     accountPrimaryUsageLocked(acc) * 100,
+			SecondaryWindowUsed:   accountSecondaryUsageLocked(acc) * 100,
 			PrimaryResetMinutes:   primaryReset,
 			SecondaryResetMinutes: secondaryReset,
 			TotalInputTokens:      acc.Totals.TotalInputTokens,
@@ -1450,7 +1473,7 @@ func (h *proxyHandler) handlePoolStats(w http.ResponseWriter, r *http.Request) {
 	highestScore := make(map[string]float64)
 	highestIdx := make(map[string]int)
 	for i, as := range stats.Accounts {
-		if as.Status != "dead" && as.Score > highestScore[as.Type] {
+		if (as.Status == "healthy" || as.Status == "degraded") && as.Score > highestScore[as.Type] {
 			highestScore[as.Type] = as.Score
 			highestIdx[as.Type] = i
 		}
@@ -1536,8 +1559,95 @@ func (h *proxyHandler) handlePoolStats(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Populate cost data from analytics store
+	if h.analyticsStore != nil {
+		// Per-account costs (all-time and 30d)
+		allTimeCosts, _ := h.analyticsStore.getAllTimeAccountCosts()
+		last30dCosts, _ := h.analyticsStore.getCostByAccount(30)
+
+		// Build account ID -> real ID mapping for cost lookup
+		// (stats use hashed IDs, costs use real IDs)
+		accountIDMap := make(map[string]string) // hashed -> real
+		for _, acc := range accounts {
+			acc.mu.Lock()
+			accountIDMap[hashAccountID(acc.ID)] = acc.ID
+			acc.mu.Unlock()
+		}
+
+		// Update per-account cost fields
+		for i := range stats.Accounts {
+			as := &stats.Accounts[i]
+			realID := accountIDMap[as.ID]
+
+			subCost, subLabel := getSubscriptionCost(AccountType(as.Type), accountPlanForSubscription(as.PlanType))
+			as.SubscriptionCostMonthly = subCost
+			as.SubscriptionLabel = subLabel
+			as.APICostEstimate = allTimeCosts[realID]
+			as.APICostLast30d = last30dCosts[realID]
+			if subCost > 0 {
+				as.ROI = as.APICostEstimate / subCost
+			}
+		}
+
+		// Provider-level aggregation
+		providerCosts := make(map[string]ProviderCostSummary)
+		for i := range stats.Accounts {
+			as := &stats.Accounts[i]
+			pcs := providerCosts[as.Type]
+			pcs.APICost += as.APICostEstimate
+			pcs.SubscriptionCost += as.SubscriptionCostMonthly
+			pcs.AccountCount++
+			providerCosts[as.Type] = pcs
+		}
+		for k, pcs := range providerCosts {
+			if pcs.SubscriptionCost > 0 {
+				pcs.ROI = pcs.APICost / pcs.SubscriptionCost
+			}
+			providerCosts[k] = pcs
+		}
+		stats.AggregateUsage.CostByProvider = providerCosts
+
+		// Pool-level totals
+		totalAPICost, _ := h.analyticsStore.getTotalCost()
+		stats.AggregateUsage.TotalAPICost = totalAPICost
+		var totalSubCost float64
+		for _, pcs := range providerCosts {
+			totalSubCost += pcs.SubscriptionCost
+		}
+		stats.AggregateUsage.TotalSubscriptionCost = totalSubCost
+		if totalSubCost > 0 {
+			stats.AggregateUsage.OverallROI = totalAPICost / totalSubCost
+		}
+
+		// Daily cost trend for chart
+		if dailyCosts, err := h.analyticsStore.getDailyCosts(30); err == nil {
+			stats.DailyCosts = dailyCosts
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(stats)
+}
+
+// accountPlanForSubscription normalizes plan type strings for subscription cost lookup.
+func accountPlanForSubscription(planType string) string {
+	// The plan type from the pool may include tier info like "pro 5x", "pro 20x"
+	// Normalize for subscription lookup
+	pt := strings.ToLower(strings.TrimSpace(planType))
+	switch {
+	case strings.Contains(pt, "20x"):
+		return "max_20x"
+	case strings.Contains(pt, "5x"):
+		return "max_5x"
+	case strings.Contains(pt, "team"):
+		return "team"
+	case strings.Contains(pt, "pro"):
+		return "pro"
+	case strings.Contains(pt, "plus"):
+		return "plus"
+	default:
+		return pt
+	}
 }
 
 // handleWhoami returns the current user's ID based on their JWT, Claude pool token, or hashed IP.

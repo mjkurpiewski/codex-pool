@@ -28,18 +28,22 @@ func safeText(b []byte) string {
 
 // getClientIP extracts the client IP from the request, checking common proxy headers.
 func getClientIP(r *http.Request) string {
-	// Check X-Forwarded-For first (may contain multiple IPs)
+	// Check CF-Connecting-IP first (Cloudflare, most reliable when present)
+	if cfip := r.Header.Get("CF-Connecting-IP"); cfip != "" {
+		return cfip
+	}
+	// Check X-Forwarded-For (may contain multiple IPs, take first valid one)
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		parts := strings.Split(xff, ",")
-		return strings.TrimSpace(parts[0])
+		for _, part := range strings.Split(xff, ",") {
+			part = strings.TrimSpace(part)
+			if ip := net.ParseIP(part); ip != nil {
+				return part
+			}
+		}
 	}
 	// Check X-Real-IP
 	if xri := r.Header.Get("X-Real-IP"); xri != "" {
 		return xri
-	}
-	// Check CF-Connecting-IP (Cloudflare)
-	if cfip := r.Header.Get("CF-Connecting-IP"); cfip != "" {
-		return cfip
 	}
 	// Fall back to RemoteAddr
 	ip, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -53,6 +57,12 @@ func respondJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	enc := json.NewEncoder(w)
 	_ = enc.Encode(v)
+}
+
+func respondJSONError(w http.ResponseWriter, code int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
 // shouldStreamBody returns true when the request body should be streamed directly

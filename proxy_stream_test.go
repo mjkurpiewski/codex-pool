@@ -11,6 +11,8 @@ import (
 )
 
 func TestProxyStreamedRequestClaude(t *testing.T) {
+	t.Setenv("POOL_JWT_SECRET", "test-secret")
+
 	receivedCh := make(chan int64, 1)
 	keyCh := make(chan string, 1)
 
@@ -34,7 +36,7 @@ func TestProxyStreamedRequestClaude(t *testing.T) {
 	pool := newPoolState([]*Account{acc}, false)
 
 	h := &proxyHandler{
-		cfg: config{
+		cfg: &config{
 			requestTimeout:       5 * time.Second,
 			streamTimeout:        5 * time.Second,
 			maxInMemoryBodyBytes: 1024,
@@ -55,6 +57,7 @@ func TestProxyStreamedRequestClaude(t *testing.T) {
 		t.Fatalf("new request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+generateClaudePoolToken("test-secret", "stream-user"))
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

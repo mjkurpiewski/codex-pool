@@ -12,6 +12,9 @@
 # Testing / automation
 .playwright-mcp/
 
+# Desloppify
+.desloppify/
+
 # Local notes (deployment docs, personal notes)
 .localnotes/
 

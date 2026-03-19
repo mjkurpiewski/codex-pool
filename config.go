@@ -23,6 +23,8 @@ type ConfigFile struct {
 	AdminToken      string  `toml:"admin_token"`
 	TierThreshold   float64 `toml:"tier_threshold"` // Secondary usage % threshold for tier preference (default 0.15)
 
+	ModelAliases map[string]string `toml:"model_aliases"`
+
 	PoolUsers PoolUsersConfig `toml:"pool_users"`
 }
 

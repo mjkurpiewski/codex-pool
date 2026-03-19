@@ -56,12 +56,14 @@ type AccountStatus struct {
 	PlanType           string
 	Disabled           bool
 	Dead               bool
+	CoolingDown        bool
 	PrimaryUsed        float64
 	SecondaryUsed      float64
 	EffectivePrimary   float64 // After applying plan weight
 	EffectiveSecondary float64
 	PrimaryResetIn     string
 	SecondaryResetIn   string
+	CooldownIn         string
 	ExpiresIn          string
 	LastUsed           string
 	Score              float64
@@ -119,6 +121,7 @@ func (h *proxyHandler) serveStatusPage(w http.ResponseWriter, r *http.Request) {
 			PlanType:           a.PlanType,
 			Disabled:           a.Disabled,
 			Dead:               a.Dead,
+			CoolingDown:        accountCoolingDownLocked(a, now),
 			PrimaryUsed:        primaryUsed * 100,
 			SecondaryUsed:      secondaryUsed * 100,
 			EffectivePrimary:   effectivePrimary * 100,
@@ -139,6 +142,10 @@ func (h *proxyHandler) serveStatusPage(w http.ResponseWriter, r *http.Request) {
 			status.SecondaryResetIn = formatDuration(a.Usage.SecondaryResetAt.Sub(now))
 		} else if a.Usage.SecondaryWindowMinutes > 0 {
 			status.SecondaryResetIn = fmt.Sprintf("~%dd", a.Usage.SecondaryWindowMinutes/60/24)
+		}
+
+		if status.CoolingDown {
+			status.CooldownIn = formatDuration(a.RateLimitUntil.Sub(now))
 		}
 
 		if !a.ExpiresAt.IsZero() {
@@ -462,6 +469,7 @@ const statusHTML = `<!DOCTYPE html>
                 {{.ID}}
                 {{if .Disabled}}<span class="tag tag-disabled">disabled</span>{{end}}
                 {{if .Dead}}<span class="tag tag-dead">dead</span>{{end}}
+                {{if .CoolingDown}}<span class="tag tag-disabled">cooldown</span>{{end}}
             </td>
             <td>
                 {{if eq .Type "codex"}}<span class="tag tag-codex">codex</span>{{end}}
@@ -479,7 +487,7 @@ const statusHTML = `<!DOCTYPE html>
             <td class="usage-cell">
                 {{bar .EffectivePrimary}}{{pct .PrimaryUsed}}
                 {{if ne .PlanType "pro"}}{{if ne .PlanType "gemini"}}{{if ne .PlanType "claude"}}{{if ne .PlanType "max"}}<span class="effective">(→{{pct .EffectivePrimary}})</span>{{end}}{{end}}{{end}}{{end}}
-                {{if .PrimaryResetIn}}<br><small>resets in {{.PrimaryResetIn}}</small>{{end}}
+                {{if .CoolingDown}}<br><small>cooldown {{.CooldownIn}}</small>{{else if .PrimaryResetIn}}<br><small>resets in {{.PrimaryResetIn}}</small>{{end}}
             </td>
             <td class="usage-cell">
                 {{bar .EffectiveSecondary}}{{pct .SecondaryUsed}}

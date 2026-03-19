@@ -79,6 +79,9 @@ func (p *KimiProvider) ParseUsage(obj map[string]any) *RequestUsage {
 			return nil
 		}
 		ru.BillableTokens = ru.InputTokens + ru.OutputTokens
+		if m, ok := obj["model"].(string); ok && m != "" {
+			ru.Model = m
+		}
 		return ru
 	}
 
@@ -123,7 +126,13 @@ func (p *KimiProvider) ParseUsage(obj map[string]any) *RequestUsage {
 }
 
 func (p *KimiProvider) ParseUsageHeaders(acc *Account, headers http.Header) {
-	// No special header-based usage tracking for Kimi
+	snap, ok := parseKimiResponseRateLimits(headers)
+	if !ok {
+		return
+	}
+	acc.mu.Lock()
+	acc.Usage = mergeUsage(acc.Usage, snap)
+	acc.mu.Unlock()
 }
 
 func (p *KimiProvider) UpstreamURL(path string) *url.URL {
@@ -153,4 +162,67 @@ var kimiModels = map[string]bool{
 // isKimiModel returns true if the given model name should be routed to Kimi.
 func isKimiModel(model string) bool {
 	return kimiModels[strings.ToLower(strings.TrimSpace(model))]
+}
+
+func parseKimiResponseRateLimits(headers http.Header) (UsageSnapshot, bool) {
+	if headers == nil {
+		return UsageSnapshot{}, false
+	}
+
+	snap := UsageSnapshot{
+		RetrievedAt: time.Now(),
+		Source:      "headers",
+	}
+	hasPrimary := false
+	hasSecondary := false
+
+	if pct, ok := parseRateLimitPercent(headers.Get("x-ratelimit-requests-utilization")); ok {
+		snap.PrimaryUsedPercent = pct
+		snap.PrimaryUsed = pct
+		hasPrimary = true
+	} else if pct, ok := parseRateLimitUsageFromRemainingLimit(headers, "x-ratelimit-remaining-requests", "x-ratelimit-limit-requests"); ok {
+		snap.PrimaryUsedPercent = pct
+		snap.PrimaryUsed = pct
+		hasPrimary = true
+	} else if pct, ok := parseRateLimitUsageFromRemainingLimit(headers, "x-ratelimit-requests-remaining", "x-ratelimit-requests-limit"); ok {
+		snap.PrimaryUsedPercent = pct
+		snap.PrimaryUsed = pct
+		hasPrimary = true
+	} else if pct, ok := parseRateLimitUsageFromRemainingLimit(headers, "x-ratelimit-remaining", "x-ratelimit-limit"); ok {
+		snap.PrimaryUsedPercent = pct
+		snap.PrimaryUsed = pct
+		hasPrimary = true
+	}
+
+	if pct, ok := parseRateLimitPercent(headers.Get("x-ratelimit-tokens-utilization")); ok {
+		snap.SecondaryUsedPercent = pct
+		snap.SecondaryUsed = pct
+		hasSecondary = true
+	} else if pct, ok := parseRateLimitUsageFromRemainingLimit(headers, "x-ratelimit-remaining-tokens", "x-ratelimit-limit-tokens"); ok {
+		snap.SecondaryUsedPercent = pct
+		snap.SecondaryUsed = pct
+		hasSecondary = true
+	}
+
+	if !hasPrimary && !hasSecondary {
+		return UsageSnapshot{}, false
+	}
+
+	requestsReset, ok := parseRateLimitReset(headers.Get("x-ratelimit-reset-requests"))
+	if !ok {
+		requestsReset, ok = parseRateLimitReset(headers.Get("x-ratelimit-requests-reset"))
+	}
+	if ok {
+		snap.PrimaryResetAt = requestsReset
+	}
+
+	tokensReset, ok := parseRateLimitReset(headers.Get("x-ratelimit-reset-tokens"))
+	if !ok {
+		tokensReset, ok = parseRateLimitReset(headers.Get("x-ratelimit-tokens-reset"))
+	}
+	if ok {
+		snap.SecondaryResetAt = tokensReset
+	}
+
+	return snap, true
 }
